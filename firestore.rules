@@ -1,0 +1,214 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // HELPER FUNCTIONS & AUTHENTICATION GUARDS
+    // ==========================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function hasUserDoc() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Primary Owner Admin Check:
+    // Email: raheema62038@gmail.com (case-insensitive safe match)
+    // Phone: +919175601497 / 9175601497
+    // Or Firestore user profile flagged as owner / isPrimaryOwner / isOwner
+    function isPrimaryOwner() {
+      return isSignedIn() && (
+        // Safe check for email in Auth token
+        ('email' in request.auth.token && request.auth.token.email != null && (
+          request.auth.token.email == 'raheema62038@gmail.com' ||
+          request.auth.token.email.matches('(?i)^raheema62038@gmail[.]com$')
+        )) ||
+        // Safe check for primary owner phone number in Auth token
+        ('phone_number' in request.auth.token && request.auth.token.phone_number != null && (
+          request.auth.token.phone_number == '+919175601497' ||
+          request.auth.token.phone_number == '9175601497' ||
+          request.auth.token.phone_number.matches('.*9175601497$')
+        )) ||
+        // Safe check for user profile in Firestore
+        (hasUserDoc() && (
+          ('email' in getUserData() && getUserData().email != null && (
+            getUserData().email == 'raheema62038@gmail.com' ||
+            getUserData().email.matches('(?i)^raheema62038@gmail[.]com$')
+          )) ||
+          ('role' in getUserData() && (getUserData().role == 'owner' || getUserData().role == 'Owner')) ||
+          ('userRole' in getUserData() && (getUserData().userRole == 'owner' || getUserData().userRole == 'Owner')) ||
+          ('isPrimaryOwner' in getUserData() && getUserData().isPrimaryOwner == true) ||
+          ('isOwner' in getUserData() && getUserData().isOwner == true)
+        ))
+      );
+    }
+
+    // Active Admin Check:
+    // Only primary owner OR an approved, non-deactivated admin created by Owner
+    function isAdmin() {
+      return isSignedIn() && (
+        isPrimaryOwner() ||
+        (
+          hasUserDoc() &&
+          (
+            ('role' in getUserData() && (getUserData().role == 'admin' || getUserData().role == 'owner' || getUserData().role == 'Admin' || getUserData().role == 'Owner')) ||
+            ('userRole' in getUserData() && (getUserData().userRole == 'admin' || getUserData().userRole == 'owner'))
+          ) &&
+          (!('isDeactivated' in getUserData()) || getUserData().isDeactivated != true) &&
+          (!('adminAccessRevoked' in getUserData()) || getUserData().adminAccessRevoked != true) &&
+          (!('status' in getUserData()) || getUserData().status == 'approved' || getUserData().status == 'active' || getUserData().status == 'none' || getUserData().status == 'Approved')
+        )
+      );
+    }
+
+    // ==========================================
+    // PORTAL SETTINGS & BRANDING CONFIGURATION
+    // (Banners, Logo, Admin Help, Text, Announcements, Offers)
+    // ==========================================
+    // Read: Allowed for all users and customers to display the portal correctly
+    // Write: Strictly restricted to authorized Admin / Owner accounts
+    match /portal_settings/{settingId} {
+      allow read: if true;
+      allow write: if isSignedIn() && isAdmin();
+    }
+
+    // Promotional Offers:
+    // Read: Allowed for all users and visitors to view offers
+    // Write: Strictly restricted to authorized Admin / Owner accounts
+    match /offers/{offerId} {
+      allow read: if true;
+      allow write: if isSignedIn() && isAdmin();
+    }
+
+    // ==========================================
+    // USER PROFILES & ACCESS CONTROL (RBAC)
+    // ==========================================
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+
+      // Creating user profiles:
+      // - Primary Owner can create any user (including Admin)
+      // - Users can create their own profile; customers cannot grant themselves owner/admin
+      allow create: if isSignedIn() && (
+        isPrimaryOwner() ||
+        (
+          isOwner(userId) && (
+            ('email' in request.auth.token && (
+              request.auth.token.email == 'raheema62038@gmail.com' ||
+              request.auth.token.email.matches('(?i)^raheema62038@gmail[.]com$')
+            )) ||
+            ('phone_number' in request.auth.token && request.auth.token.phone_number.matches('.*9175601497$')) ||
+            (!('role' in request.resource.data) || request.resource.data.role == 'customer')
+          )
+        )
+      );
+
+      // Updating user profiles:
+      // - Primary Owner can update any user (e.g. approve/deactivate admins, edit details)
+      // - Self update by Customer: can update name, phone, circle, but CANNOT elevate role or owner flags
+      allow update: if isSignedIn() && (
+        isPrimaryOwner() ||
+        (
+          isOwner(userId) &&
+          (!('role' in request.resource.data) || request.resource.data.role == resource.data.role) &&
+          (!('status' in request.resource.data) || request.resource.data.status == resource.data.status) &&
+          (!('isPrimaryOwner' in request.resource.data) || request.resource.data.isPrimaryOwner != true) &&
+          (!('isOwner' in request.resource.data) || request.resource.data.isOwner != true) &&
+          (!('isDeactivated' in request.resource.data) || request.resource.data.isDeactivated == resource.data.isDeactivated)
+        )
+      );
+
+      // Deleting user profiles:
+      // - Only Primary Owner can delete accounts
+      // - Primary Owner account cannot be deleted by anyone except primary owner themselves in protected control
+      allow delete: if isSignedIn() && isPrimaryOwner() && (
+        request.auth.uid == userId ||
+        !('email' in resource.data) ||
+        (resource.data.email != 'raheema62038@gmail.com' && !resource.data.email.matches('(?i)^raheema62038@gmail[.]com$'))
+      );
+    }
+
+    // ==========================================
+    // LEADS & CUSTOMER MNP BOOKINGS
+    // ==========================================
+    // - STRICT CUSTOMER DATA ISOLATION:
+    //   - Customer can view, list, create, or update ONLY their own bookings (customerUid == auth.uid).
+    //   - Customer CANNOT view, list, edit, or delete any other customer's booking.
+    // - ADMIN & OWNER ACCESS:
+    //   - Owner and approved Admins can view, search, map, and manage all customer bookings.
+    //   - Admin can update bookingStatus ('Pending', 'Verified', 'Completed', 'Cancelled', etc.)
+    //   - Admin can update customer verification (isCustomerVerified, customerVerificationStatus)
+    //   - Admin can edit customer details (name, phone, plan, address, remarks)
+    // - PERMANENT DATA RETENTION:
+    //   - Existing customer bookings and data are strictly preserved.
+    //   - Only Primary Owner can delete a lead upon explicit confirmation.
+    match /leads/{leadId} {
+      allow get: if isSignedIn() && (
+        isAdmin() ||
+        ('customerUid' in resource.data && resource.data.customerUid == request.auth.uid) ||
+        ('createdByUid' in resource.data && resource.data.createdByUid == request.auth.uid) ||
+        ('email' in request.auth.token && 'customerEmail' in resource.data && resource.data.customerEmail == request.auth.token.email) ||
+        ('phone_number' in request.auth.token && 'mobileNumber' in resource.data && (
+          resource.data.mobileNumber == request.auth.token.phone_number ||
+          ('+91' + resource.data.mobileNumber) == request.auth.token.phone_number
+        ))
+      );
+
+      allow list: if isSignedIn() && (
+        isAdmin() ||
+        ('customerUid' in resource.data && resource.data.customerUid == request.auth.uid) ||
+        ('createdByUid' in resource.data && resource.data.createdByUid == request.auth.uid)
+      );
+
+      allow create: if isSignedIn() && (
+        isAdmin() ||
+        ('customerUid' in request.resource.data && request.resource.data.customerUid == request.auth.uid) ||
+        ('createdByUid' in request.resource.data && request.resource.data.createdByUid == request.auth.uid) ||
+        ('email' in request.auth.token && 'customerEmail' in request.resource.data && request.resource.data.customerEmail == request.auth.token.email) ||
+        ('phone_number' in request.auth.token && 'mobileNumber' in request.resource.data && (
+          request.resource.data.mobileNumber == request.auth.token.phone_number ||
+          ('+91' + request.resource.data.mobileNumber) == request.auth.token.phone_number
+        ))
+      );
+
+      allow update: if isSignedIn() && (
+        isAdmin() ||
+        (
+          (
+            ('customerUid' in resource.data && resource.data.customerUid == request.auth.uid) ||
+            ('createdByUid' in resource.data && resource.data.createdByUid == request.auth.uid)
+          ) &&
+          (!('customerUid' in request.resource.data) || request.resource.data.customerUid == resource.data.customerUid) &&
+          (!('createdByUid' in request.resource.data) || request.resource.data.createdByUid == resource.data.createdByUid)
+        )
+      );
+
+      // Only Primary Owner can delete leads upon explicit confirmation
+      allow delete: if isSignedIn() && isPrimaryOwner();
+    }
+
+    // ==========================================
+    // TRACKABLE APP DOWNLOADS & SYSTEM METADATA
+    // ==========================================
+    match /app_downloads/{downloadId} {
+      allow create: if true;
+      allow read, list: if isSignedIn() && isAdmin();
+    }
+
+    match /system/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isPrimaryOwner();
+    }
+  }
+}

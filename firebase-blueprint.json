@@ -1,0 +1,120 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role-based access control: Primary Owner Admin, Admin, and Customer. No salesperson or passkeys.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["owner", "admin", "customer"] },
+        "status": { "type": "string", "enum": ["none", "approved", "deactivated", "rejected"] },
+        "phone": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "isPrimaryOwner": { "type": "boolean" },
+        "isOwner": { "type": "boolean" },
+        "isDeactivated": { "type": "boolean" },
+        "approvedAt": { "type": "string" },
+        "approvedBy": { "type": "string" },
+        "deactivatedAt": { "type": "string" },
+        "deactivatedBy": { "type": "string" },
+        "createdByOwnerUid": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "lastLoginAt": { "type": "string" },
+        "assignedCircle": { "type": "string" }
+      },
+      "required": ["uid", "displayName", "role"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "Vi MNP Sales Lead and Customer Porting Request strictly isolated by customerUid for customers, with full Owner and Admin access.",
+      "type": "object",
+      "properties": {
+        "customerUid": { "type": "string" },
+        "customerEmail": { "type": "string" },
+        "customerName": { "type": "string" },
+        "mobileNumber": { "type": "string" },
+        "alternateNumber": { "type": "string" },
+        "currentOperator": { "type": "string" },
+        "connectionType": { "type": "string" },
+        "selectedPlan": { "type": "string" },
+        "leadType": { "type": "string" },
+        "simNumber": { "type": "string" },
+        "simType": { "type": "string" },
+        "upcCode": { "type": "string" },
+        "upcExpiryDate": { "type": "string" },
+        "address": { "type": "string" },
+        "cityCircle": { "type": "string" },
+        "pincode": { "type": "string" },
+        "status": { "type": "string" },
+        "bookingStatus": { "type": "string" },
+        "bookingCount": { "type": "number" },
+        "remarks": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdByEmail": { "type": "string" },
+        "createdByName": { "type": "string" }
+      },
+      "required": [
+        "customerName",
+        "mobileNumber",
+        "currentOperator",
+        "connectionType",
+        "selectedPlan",
+        "status",
+        "createdByUid",
+        "createdAt"
+      ]
+    },
+    "PortalConfig": {
+      "title": "PortalConfig",
+      "description": "Portal visual branding, banners, logo, contact help numbers, promotional offers, announcements, and customer text configuration managed by Admins.",
+      "type": "object",
+      "properties": {
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedByEmail": { "type": "string" },
+        "logo": { "type": "object" },
+        "adminHelp": { "type": "object" },
+        "texts": { "type": "object" },
+        "banners": { "type": "array" },
+        "offers": { "type": "array" }
+      }
+    },
+    "PromotionalOffer": {
+      "title": "PromotionalOffer",
+      "description": "Promotional offer highlights, tariff lines, and terms managed by Admins for customer portal display.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "heading": { "type": "string" },
+        "badge": { "type": "string" },
+        "items": { "type": "array" },
+        "disclaimer": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedByEmail": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles. Customers can only read and update their own profile; Primary Owner Admin can create and manage Admins; Admins can view customer directory for service."
+    },
+    "/leads/{leadId}": {
+      "schema": { "$ref": "#/entities/Lead" },
+      "description": "Vi MNP customer porting records. Strict customer data isolation: Each customer can only view and submit their own personal requests (customerUid == auth.uid); Owner and Admin have access to manage customer leads."
+    },
+    "/portal_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/PortalConfig" },
+      "description": "Customer Portal visual and operational configurations. Publicly readable by all customers; editable exclusively by authorized Admin and Owner accounts."
+    },
+    "/offers/{offerId}": {
+      "schema": { "$ref": "#/entities/PromotionalOffer" },
+      "description": "Promotional offers and tariff cards. Publicly readable by all customers; editable exclusively by authorized Admin and Owner accounts."
+    }
+  }
+}

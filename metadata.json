@@ -1,0 +1,6 @@
+{
+  "name": "Vi Sales MNP",
+  "description": "Vi Sales MNP - Role-based Porting and SIM Management application with dedicated Admin and Customer portals, Firestore Security Rules, UID-isolated data access, and Firebase Authentication.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

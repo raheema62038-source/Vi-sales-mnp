@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="viGradFull" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E60000" />
+      <stop offset="100%" stop-color="#B80000" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Full bleed square background for Android maskable icon -->
+  <rect width="512" height="512" fill="url(#viGradFull)" />
+  
+  <!-- Content positioned within 80% safe zone (margin ~50px on all sides) -->
+  <g transform="translate(15, 5)">
+    <!-- Letter 'V' -->
+    <path d="M125 190 L186 345 C188 350 193 350 195 345 L256 190 L216 190 L191 275 L165 190 Z" fill="#FFFFFF" />
+    
+    <!-- Letter 'i' stem -->
+    <rect x="272" y="238" width="42" height="107" rx="8" fill="#FFFFFF" />
+    
+    <!-- Dot of 'i' -->
+    <circle cx="293" cy="198" r="23" fill="#FFC800" />
+    
+    <!-- Badge -->
+    <rect x="156" y="380" width="170" height="38" rx="19" fill="rgba(0,0,0,0.2)" />
+    <text x="241" y="406" text-anchor="middle" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="800" font-size="20" letter-spacing="3">SALES MNP</text>
+  </g>
+</svg>
