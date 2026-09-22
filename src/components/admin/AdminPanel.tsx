@@ -2024,13 +2024,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         ...portalConfig,
                         appUpdate: {
                           ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
-                          apkDownloadUrl: DEFAULT_APP_UPDATE_CONFIG.apkDownloadUrl
+                          apkDownloadUrl: 'https://github.com/raheema62038/vi-sales-mnp/releases/latest/download/app-release.apk'
                         }
                       })
                     }
                     className="text-[10px] font-bold text-red-600 hover:underline cursor-pointer"
                   >
-                    + GitHub Actions Release URL भरें
+                    + Signed Release APK URL (app-release.apk)
+                  </button>
+                  <span className="text-slate-300 text-[10px]">•</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPortalConfig({
+                        ...portalConfig,
+                        appUpdate: {
+                          ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                          apkDownloadUrl: 'https://github.com/raheema62038/vi-sales-mnp/releases/latest/download/app-debug.apk'
+                        }
+                      })
+                    }
+                    className="text-[10px] font-bold text-slate-600 hover:underline cursor-pointer"
+                  >
+                    + Compatibility URL (app-debug.apk)
                   </button>
                 </div>
               </div>
@@ -2171,13 +2187,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             <div className="bg-slate-900 text-white rounded-3xl p-5 space-y-3 shadow-sm border border-slate-800">
               <div className="flex items-center gap-2 text-xs font-bold text-red-400 uppercase tracking-wider">
                 <ShieldCheck className="w-4 h-4" />
-                <span>{isHindi ? 'एंड्रॉयड APK और GitHub Actions गाइड' : 'Android APK & GitHub Actions Architecture'}</span>
+                <span>{isHindi ? 'Persistent Keystore & Signed Release APK गाइड' : 'Persistent Keystore & Signed Release Architecture'}</span>
               </div>
               <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside leading-relaxed">
                 <li><strong>Application ID:</strong> <code>com.vi.salesmnp</code> (पैकेज आईडी वही रखी गई है ताकि ऐप अलग से न बने बल्कि मौजूदा ऐप पर ही अपडेट हो)।</li>
                 <li><strong>Version Code Sequence:</strong> पुराना APK = Code 1 (v1.0), नया APK = Code 2 (v1.1)।</li>
-                <li><strong>Safe Installation:</strong> ऐप ग्राहक की अनुमति बिना बैकग्राउंड में इंस्टॉल नहीं करता, बल्कि सुरक्षित डाउनलोड पेज खोलता है।</li>
-                <li><strong>Session Control:</strong> अगर ग्राहक "Later" चुनता है, तो उसी सेशन में बार-बार परेशान करने वाला पॉपअप नहीं दिखेगा।</li>
+                <li><strong>Persistent Keystore (Signatures):</strong> एक ही कीस्टोर से साइन होने के कारण भविष्य के सभी APK बिना अनइंस्टॉल किए एक के ऊपर एक अपडेट होंगे।</li>
+                <li><strong>GitHub Secrets:</strong> <code>ANDROID_KEYSTORE_BASE64</code>, <code>ANDROID_KEYSTORE_PASSWORD</code>, <code>ANDROID_KEY_ALIAS</code>, <code>ANDROID_KEY_PASSWORD</code>।</li>
+                <li><strong>Dual Asset Upload:</strong> GitHub Release में <code>app-release.apk</code> और पुराने लिंक्स के लिए <code>app-debug.apk</code> दोनों उपलब्ध रहते हैं।</li>
               </ul>
             </div>
           </div>
