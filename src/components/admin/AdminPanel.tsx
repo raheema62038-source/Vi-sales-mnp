@@ -35,7 +35,8 @@ import {
   ArrowRight,
   Radio,
   FileText,
-  Truck
+  Truck,
+  Download
 } from 'lucide-react';
 import { 
   Lead, 
@@ -46,6 +47,7 @@ import {
   PortalLogoConfig, 
   PortalAdminHelp, 
   PortalTexts,
+  AppUpdateConfig,
   BookingStatus,
   CurrentOperator
 } from '../../types';
@@ -64,6 +66,9 @@ import {
   subscribeToPortalConfig, 
   DEFAULT_PORTAL_CONFIG 
 } from '../../services/portalConfigService';
+import { DEFAULT_APP_UPDATE_CONFIG } from '../../services/appUpdateService';
+import { INSTALLED_APP_VERSION } from '../../config/appVersion';
+import { AppUpdateModal } from '../AppUpdateModal';
 
 interface AdminPanelProps {
   leads: Lead[];
@@ -91,6 +96,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [operatorFilter, setOperatorFilter] = useState<string>('ALL');
   const [verificationFilter, setVerificationFilter] = useState<string>('ALL');
+
+  // App Update Preview Modal
+  const [isPreviewUpdateModalOpen, setIsPreviewUpdateModalOpen] = useState(false);
 
   // Modals
   const [selectedBookingForDetails, setSelectedBookingForDetails] = useState<Lead | null>(null);
@@ -443,6 +451,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               { id: 'logo', label: isHindi ? 'लोगो' : 'Logo', icon: Sparkles },
               { id: 'admin-help', label: isHindi ? 'हेल्प नंबर' : 'Admin Help', icon: PhoneCall },
               { id: 'locations', label: isHindi ? 'मैप / लोकेशन' : 'Map/Locations', icon: MapPin, count: stats.mappedLocations },
+              { id: 'app-updates', label: isHindi ? 'ऐप अपडेट' : 'App Updates', icon: Download },
               { id: 'settings', label: isHindi ? 'सेटिंग्स' : 'Settings', icon: Settings },
             ].map((tab) => {
               const Icon = tab.icon;
@@ -1804,6 +1813,375 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
           </div>
         )}
+
+        {/* ======================================================== */}
+        {/* 9. APP UPDATES & APK SYSTEM (Requirement 14)            */}
+        {/* ======================================================== */}
+        {activeSection === 'app-updates' && (
+          <div className="space-y-6">
+            {/* Header / Overview */}
+            <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
+                  <Download className="w-5 h-5 text-red-600" />
+                  <span>{isHindi ? 'Android APK इन-ऐप ऑटोमैटिक अपडेट सिस्टम' : 'Android APK Automatic In-App Update Management'}</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 max-w-3xl leading-relaxed">
+                  {isHindi 
+                    ? 'यहाँ से आप नए APK का वर्जन कोड, डाउनलोड लिंक, अपडेट मैसेज और Force Update सेट कर सकते हैं। ग्राहक जब ऐप खोलेगा, तब सिस्टम अपने आप चेक करेगा और नया अपडेट मिलने पर सूचना देगा।'
+                    : 'Manage the latest APK version, download URL, update message, and force-update rules. When customers launch the app, this system automatically detects updates and prompts them.'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsPreviewUpdateModalOpen(true)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center gap-2 cursor-pointer shadow-xs transition-all"
+                >
+                  <Eye className="w-4 h-4 text-amber-400" />
+                  <span>{isHindi ? 'पॉपअप प्रीव्यू करें' : 'Preview Customer Popup'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Status Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">
+                  {isHindi ? 'वर्तमान में लाइव नया वर्जन' : 'Target Live Release'}
+                </span>
+                <div className="flex items-baseline gap-2">
+                  <span className="font-mono font-black text-slate-900 text-lg">
+                    v{portalConfig.appUpdate?.latestVersionName || DEFAULT_APP_UPDATE_CONFIG.latestVersionName}
+                  </span>
+                  <span className="text-xs text-slate-500 font-bold">
+                    (Code: {portalConfig.appUpdate?.latestVersionCode || DEFAULT_APP_UPDATE_CONFIG.latestVersionCode})
+                  </span>
+                </div>
+                <span className="text-[11px] text-slate-500 block">
+                  Package: <code className="font-mono text-red-600 bg-red-50 px-1 py-0.5 rounded">com.vi.salesmnp</code>
+                </span>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">
+                  {isHindi ? 'अपडेट मोड' : 'Update Enforcement Mode'}
+                </span>
+                <div className="flex items-center gap-2 pt-0.5">
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-black inline-flex items-center gap-1.5 ${
+                    portalConfig.appUpdate?.forceUpdate
+                      ? 'bg-red-100 text-red-700 border border-red-200'
+                      : 'bg-blue-100 text-blue-700 border border-blue-200'
+                  }`}>
+                    {portalConfig.appUpdate?.forceUpdate ? '⚠️ Force Update (अनिवार्य)' : '✓ Flexible ("Later" अनुमति)'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  {portalConfig.appUpdate?.forceUpdate 
+                    ? 'ग्राहक को केवल "Update Now" दिखेगा, अपडेट बिना ऐप नहीं चलेगा।' 
+                    : 'ग्राहक "Update Now" या "Later" चुन सकता है।'}
+                </p>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+                <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider block">
+                  {isHindi ? 'चेक स्टेटस' : 'System Status'}
+                </span>
+                <div className="flex items-center gap-2 pt-0.5">
+                  <span className={`px-2.5 py-1 rounded-full text-xs font-black inline-flex items-center gap-1.5 ${
+                    portalConfig.appUpdate?.enabled !== false
+                      ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                      : 'bg-slate-100 text-slate-600 border border-slate-200'
+                  }`}>
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                    {portalConfig.appUpdate?.enabled !== false ? 'Active (सक्रिय)' : 'Paused (रोका गया)'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  {portalConfig.appUpdate?.enabled !== false 
+                    ? 'ऐप खुलते ही ग्राहकों के डिवाइस पर ऑटोमैटिक चेक चलेगा।' 
+                    : 'ऑटोमैटिक अपडेट चेक अभी बंद है।'}
+                </p>
+              </div>
+            </div>
+
+            {/* Main Form Configuration */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSaveAllPortalConfig({ appUpdate: portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG });
+              }}
+              className="bg-white p-6 rounded-3xl border border-slate-200 shadow-xs space-y-5"
+            >
+              <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+                <div>
+                  <h4 className="font-extrabold text-sm text-slate-900">
+                    {isHindi ? 'अपडेट सेटिंग्स कॉन्फ़िगर करें' : 'Configure APK Update Parameters'}
+                  </h4>
+                  <p className="text-xs text-slate-400">
+                    {isHindi ? 'इन सेटिंग्स को बदलने पर तुरंत सभी ग्राहकों को नया अपडेट दिखने लगेगा।' : 'Changes sync in real-time across customer devices.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Latest Version Name */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {isHindi ? 'नवीनतम वर्जन का नाम (Version Name)' : 'Latest Version Name'}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={portalConfig.appUpdate?.latestVersionName || ''}
+                    onChange={(e) =>
+                      setPortalConfig({
+                        ...portalConfig,
+                        appUpdate: {
+                          ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                          latestVersionName: e.target.value
+                        }
+                      })
+                    }
+                    placeholder="e.g. 1.1"
+                    className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    {isHindi ? 'दिखने वाला वर्जन (उदा: 1.1, 1.2)' : 'Visible release tag shown to users (e.g. 1.1)'}
+                  </p>
+                </div>
+
+                {/* Latest Version Code */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    {isHindi ? 'नवीनतम वर्जन कोड (Version Code - Android)' : 'Latest Version Code (Android)'}
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    required
+                    value={portalConfig.appUpdate?.latestVersionCode ?? 2}
+                    onChange={(e) =>
+                      setPortalConfig({
+                        ...portalConfig,
+                        appUpdate: {
+                          ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                          latestVersionCode: parseInt(e.target.value, 10) || 1
+                        }
+                      })
+                    }
+                    placeholder="e.g. 2"
+                    className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono font-bold focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    {isHindi ? 'एंड्रॉयड में नया अपडेट हमेशा पुराने से बड़ा कोड होना चाहिए (2 > 1)' : 'Integer build number (must increment for Android updates)'}
+                  </p>
+                </div>
+              </div>
+
+              {/* APK Download URL */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {isHindi ? 'आधिकारिक APK डाउनलोड URL (APK Download Link)' : 'Official APK Download URL'}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    required
+                    value={portalConfig.appUpdate?.apkDownloadUrl || ''}
+                    onChange={(e) =>
+                      setPortalConfig({
+                        ...portalConfig,
+                        appUpdate: {
+                          ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                          apkDownloadUrl: e.target.value
+                        }
+                      })
+                    }
+                    placeholder="https://github.com/raheema62038/vi-sales-mnp/releases/latest/download/app-debug.apk"
+                    className="flex-1 px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  />
+                  {portalConfig.appUpdate?.apkDownloadUrl && (
+                    <a
+                      href={portalConfig.appUpdate.apkDownloadUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors"
+                      title="Test URL in new tab"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      <span>{isHindi ? 'चेक करें' : 'Open Link'}</span>
+                    </a>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPortalConfig({
+                        ...portalConfig,
+                        appUpdate: {
+                          ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                          apkDownloadUrl: DEFAULT_APP_UPDATE_CONFIG.apkDownloadUrl
+                        }
+                      })
+                    }
+                    className="text-[10px] font-bold text-red-600 hover:underline cursor-pointer"
+                  >
+                    + GitHub Actions Release URL भरें
+                  </button>
+                </div>
+              </div>
+
+              {/* Toggles: Force Update & Enabled */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                {/* Force Update Toggle */}
+                <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 flex items-start justify-between gap-3">
+                  <div>
+                    <span className="font-bold text-xs text-slate-800 block">
+                      {isHindi ? 'Force Update (अनिवार्य अपडेट लागू करें)' : 'Force Update (Block Usage Until Updated)'}
+                    </span>
+                    <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      {isHindi
+                        ? 'चालू करने पर ग्राहक को "Later" का विकल्प नहीं मिलेगा और अपडेट करना जरूरी होगा।'
+                        : 'If enabled, customers cannot dismiss with "Later" and must tap "Update Now".'}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(portalConfig.appUpdate?.forceUpdate)}
+                      onChange={(e) =>
+                        setPortalConfig({
+                          ...portalConfig,
+                          appUpdate: {
+                            ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                            forceUpdate: e.target.checked
+                          }
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-red-600"></div>
+                  </label>
+                </div>
+
+                {/* Enable / Disable Update Check */}
+                <div className="p-4 rounded-2xl border border-slate-200 bg-slate-50 flex items-start justify-between gap-3">
+                  <div>
+                    <span className="font-bold text-xs text-slate-800 block">
+                      {isHindi ? 'ऑटोमैटिक अपडेट चेक चालू रखें' : 'Enable Automatic Update Check'}
+                    </span>
+                    <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      {isHindi
+                        ? 'ग्राहकों के ऐप खोलते ही बैकग्राउंड में अपडेट चेक करने की अनुमति दें।'
+                        : 'Actively prompts customers when newer APK version code is published.'}
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+                    <input
+                      type="checkbox"
+                      checked={portalConfig.appUpdate?.enabled !== false}
+                      onChange={(e) =>
+                        setPortalConfig({
+                          ...portalConfig,
+                          appUpdate: {
+                            ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                            enabled: e.target.checked
+                          }
+                        })
+                      }
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                  </label>
+                </div>
+              </div>
+
+              {/* Update Message */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {isHindi ? 'पॉपअप में दिखने वाला मैसेज (Update Message)' : 'Update Popup Message'}
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={portalConfig.appUpdate?.updateMessage || ''}
+                  onChange={(e) =>
+                    setPortalConfig({
+                      ...portalConfig,
+                      appUpdate: {
+                        ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                        updateMessage: e.target.value
+                      }
+                    })
+                  }
+                  placeholder="आपके लिए ऐप का नया version उपलब्ध है।"
+                  className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-medium focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Release Notes / What's New */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  {isHindi ? 'नया क्या है (Release Notes / What’s New)' : 'Release Notes / What’s New'}
+                </label>
+                <textarea
+                  rows={3}
+                  value={portalConfig.appUpdate?.releaseNotes || ''}
+                  onChange={(e) =>
+                    setPortalConfig({
+                      ...portalConfig,
+                      appUpdate: {
+                        ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
+                        releaseNotes: e.target.value
+                      }
+                    })
+                  }
+                  placeholder="• नया ऑटोमैटिक अपडेट सिस्टम&#10;• बेहतर परफॉरमेंस और स्टेबिलिटी"
+                  className="w-full px-3.5 py-2.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-medium focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none leading-relaxed"
+                />
+              </div>
+
+              {/* Submit Buttons */}
+              <div className="pt-2 flex flex-wrap items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={isSavingConfig}
+                  className="px-6 py-3 rounded-2xl bg-red-600 hover:bg-red-700 active:scale-95 text-white font-bold text-xs shadow-md shadow-red-500/20 flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{isSavingConfig ? 'सेव हो रहा है...' : 'सेव और पब्लिश करें (Save & Deploy Update)'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsPreviewUpdateModalOpen(true)}
+                  className="px-5 py-3 rounded-2xl bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-800 font-bold text-xs flex items-center gap-2 cursor-pointer transition-all"
+                >
+                  <Eye className="w-4 h-4 text-slate-600" />
+                  <span>{isHindi ? 'पॉपअप टेस्ट करें' : 'Test Customer Popup'}</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Technical Architecture Info Box */}
+            <div className="bg-slate-900 text-white rounded-3xl p-5 space-y-3 shadow-sm border border-slate-800">
+              <div className="flex items-center gap-2 text-xs font-bold text-red-400 uppercase tracking-wider">
+                <ShieldCheck className="w-4 h-4" />
+                <span>{isHindi ? 'एंड्रॉयड APK और GitHub Actions गाइड' : 'Android APK & GitHub Actions Architecture'}</span>
+              </div>
+              <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside leading-relaxed">
+                <li><strong>Application ID:</strong> <code>com.vi.salesmnp</code> (पैकेज आईडी वही रखी गई है ताकि ऐप अलग से न बने बल्कि मौजूदा ऐप पर ही अपडेट हो)।</li>
+                <li><strong>Version Code Sequence:</strong> पुराना APK = Code 1 (v1.0), नया APK = Code 2 (v1.1)।</li>
+                <li><strong>Safe Installation:</strong> ऐप ग्राहक की अनुमति बिना बैकग्राउंड में इंस्टॉल नहीं करता, बल्कि सुरक्षित डाउनलोड पेज खोलता है।</li>
+                <li><strong>Session Control:</strong> अगर ग्राहक "Later" चुनता है, तो उसी सेशन में बार-बार परेशान करने वाला पॉपअप नहीं दिखेगा।</li>
+              </ul>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* ======================================================== */}
@@ -2353,6 +2731,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         </div>
       )}
+
+      {/* ======================================================== */}
+      {/* MODAL 5: APP UPDATE PREVIEW FOR ADMIN TESTING            */}
+      {/* ======================================================== */}
+      <AppUpdateModal
+        isOpen={isPreviewUpdateModalOpen}
+        installedVersion={{
+          versionName: '1.0',
+          versionCode: 1,
+          appId: 'com.vi.salesmnp',
+          isNative: false
+        }}
+        updateConfig={portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG}
+        onDismissLater={() => setIsPreviewUpdateModalOpen(false)}
+        isHindi={isHindi}
+      />
     </div>
   );
 };

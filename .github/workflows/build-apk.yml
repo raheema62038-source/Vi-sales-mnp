@@ -10,6 +10,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Source Code
@@ -19,7 +21,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-        
 
       - name: Install NPM Dependencies
         run: npm install
@@ -39,9 +40,27 @@ jobs:
           chmod +x ./gradlew
           ./gradlew assembleDebug
 
-      - name: Upload Vi Sales MNP APK
+      - name: Upload Vi Sales MNP APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Vi-Sales-MNP-Debug-APK
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Publish GitHub Release (v1.1 / latest)
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.1' }}
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+          name: Vi Sales MNP APK v1.1
+          body: |
+            ### Vi Sales MNP Android APK
+            - **Application / Package ID:** `com.vi.salesmnp`
+            - **Version Name:** `1.1`
+            - **Version Code:** `2`
+            - **Download:** Download `app-debug.apk` directly to your Android device.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

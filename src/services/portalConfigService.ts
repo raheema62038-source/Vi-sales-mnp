@@ -6,8 +6,10 @@ import {
   PortalOfferItem, 
   PortalLogoConfig, 
   PortalAdminHelp, 
-  PortalTexts 
+  PortalTexts,
+  AppUpdateConfig
 } from '../types';
+import { DEFAULT_APP_UPDATE_CONFIG } from './appUpdateService';
 
 /**
  * Recursively removes undefined values to ensure Firestore payloads are clean and valid
@@ -88,6 +90,7 @@ export const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     serviceAreaNotice: 'Fixed Service Area: Maharashtra → Buldhana → Mehkar → 443301',
     announcement: 'Special Doorstep MNP Offer: Port to Vi and get 28 Days Unlimited Recharge Free!'
   },
+  appUpdate: DEFAULT_APP_UPDATE_CONFIG,
   updatedAt: new Date().toISOString()
 };
 
@@ -109,6 +112,7 @@ function getCachedConfig(): PortalConfig {
         logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(parsed.logo || {}) },
         adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(parsed.adminHelp || {}) },
         texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(parsed.texts || {}) },
+        appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(parsed.appUpdate || {}) },
         banners: Array.isArray(parsed.banners) && parsed.banners.length > 0 ? parsed.banners : DEFAULT_PORTAL_CONFIG.banners,
         offers: Array.isArray(parsed.offers) && parsed.offers.length > 0 ? parsed.offers : DEFAULT_PORTAL_CONFIG.offers,
       };
@@ -120,11 +124,14 @@ function getCachedConfig(): PortalConfig {
 }
 
 /**
- * Save configuration to localStorage cache
+ * Save configuration to localStorage cache and notify local listeners
  */
 function setCachedConfig(config: PortalConfig) {
   try {
     localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(config));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('vi-portal-config-updated', { detail: config }));
+    }
   } catch (e) {
     console.warn('Failed to cache portal config:', e);
   }
@@ -148,6 +155,7 @@ export async function getPortalConfig(): Promise<PortalConfig> {
         logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(data.logo || {}) },
         adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(data.adminHelp || {}) },
         texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(data.texts || {}) },
+        appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(data.appUpdate || {}) },
         banners: Array.isArray(data.banners) && data.banners.length > 0 ? data.banners : DEFAULT_PORTAL_CONFIG.banners,
         offers: Array.isArray(data.offers) && data.offers.length > 0 ? data.offers : DEFAULT_PORTAL_CONFIG.offers,
       };
@@ -169,42 +177,64 @@ export function subscribeToPortalConfig(
   // Immediately call with cached/default data so UI is instantly responsive
   callback(getCachedConfig());
 
-  if (!db) {
-    return () => {};
+  // Listen to local update events (instant reactivity across components in same window)
+  const handleLocalUpdate = (e: Event) => {
+    try {
+      const customEvent = e as CustomEvent<PortalConfig>;
+      if (customEvent.detail) {
+        callback(customEvent.detail);
+      }
+    } catch (err) {
+      console.warn('Local portal config event error:', err);
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('vi-portal-config-updated', handleLocalUpdate);
   }
 
-  try {
-    const docRef = doc(db, SETTINGS_COLLECTION, MAIN_CONFIG_DOC);
-    const unsubscribe = onSnapshot(
-      docRef,
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data() as Partial<PortalConfig>;
-          const merged: PortalConfig = {
-            ...DEFAULT_PORTAL_CONFIG,
-            ...data,
-            logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(data.logo || {}) },
-            adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(data.adminHelp || {}) },
-            texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(data.texts || {}) },
-            banners: Array.isArray(data.banners) && data.banners.length > 0 ? data.banners : DEFAULT_PORTAL_CONFIG.banners,
-            offers: Array.isArray(data.offers) && data.offers.length > 0 ? data.offers : DEFAULT_PORTAL_CONFIG.offers,
-          };
-          setCachedConfig(merged);
-          callback(merged);
-        } else {
+  let unsubscribeFirestore: () => void = () => {};
+
+  if (db) {
+    try {
+      const docRef = doc(db, SETTINGS_COLLECTION, MAIN_CONFIG_DOC);
+      unsubscribeFirestore = onSnapshot(
+        docRef,
+        (snap) => {
+          if (snap.exists()) {
+            const data = snap.data() as Partial<PortalConfig>;
+            const merged: PortalConfig = {
+              ...DEFAULT_PORTAL_CONFIG,
+              ...data,
+              logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(data.logo || {}) },
+              adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(data.adminHelp || {}) },
+              texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(data.texts || {}) },
+              appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(data.appUpdate || {}) },
+              banners: Array.isArray(data.banners) && data.banners.length > 0 ? data.banners : DEFAULT_PORTAL_CONFIG.banners,
+              offers: Array.isArray(data.offers) && data.offers.length > 0 ? data.offers : DEFAULT_PORTAL_CONFIG.offers,
+            };
+            setCachedConfig(merged);
+            callback(merged);
+          } else {
+            callback(getCachedConfig());
+          }
+        },
+        (err) => {
+          console.warn('Real-time portal config subscription notice:', err);
           callback(getCachedConfig());
         }
-      },
-      (err) => {
-        console.warn('Real-time portal config subscription notice:', err);
-        callback(getCachedConfig());
-      }
-    );
-    return unsubscribe;
-  } catch (err) {
-    console.warn('Failed to subscribe to portal config:', err);
-    return () => {};
+      );
+    } catch (err) {
+      console.warn('Failed to subscribe to portal config:', err);
+    }
   }
+
+  return () => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('vi-portal-config-updated', handleLocalUpdate);
+    }
+    unsubscribeFirestore();
+  };
 }
 
 /**
@@ -220,9 +250,27 @@ export async function savePortalConfig(
   const effectiveUid = adminUser?.uid || currentAuthUser?.uid || 'admin';
   const effectiveEmail = adminUser?.email || currentAuthUser?.email || adminUser?.displayName || 'Admin';
 
+  // Normalize appUpdate if included
+  const sanitizedUpdates = { ...configUpdates };
+  if (sanitizedUpdates.appUpdate) {
+    const existingAppUpdate = current.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
+    sanitizedUpdates.appUpdate = {
+      ...existingAppUpdate,
+      ...sanitizedUpdates.appUpdate,
+      latestVersionName: String(sanitizedUpdates.appUpdate.latestVersionName ?? existingAppUpdate.latestVersionName).trim(),
+      latestVersionCode: parseInt(String(sanitizedUpdates.appUpdate.latestVersionCode ?? existingAppUpdate.latestVersionCode), 10) || existingAppUpdate.latestVersionCode,
+      apkDownloadUrl: String(sanitizedUpdates.appUpdate.apkDownloadUrl ?? existingAppUpdate.apkDownloadUrl).trim(),
+      updateMessage: String(sanitizedUpdates.appUpdate.updateMessage ?? existingAppUpdate.updateMessage).trim(),
+      releaseNotes: String(sanitizedUpdates.appUpdate.releaseNotes ?? (existingAppUpdate.releaseNotes || '')).trim(),
+      forceUpdate: Boolean(sanitizedUpdates.appUpdate.forceUpdate),
+      enabled: sanitizedUpdates.appUpdate.enabled !== false,
+      releasedAt: sanitizedUpdates.appUpdate.releasedAt || new Date().toISOString()
+    };
+  }
+
   const updated: PortalConfig = {
     ...current,
-    ...configUpdates,
+    ...sanitizedUpdates,
     updatedAt: new Date().toISOString(),
     updatedBy: effectiveUid,
     updatedByEmail: effectiveEmail
@@ -321,6 +369,26 @@ export async function updatePortalTexts(
       texts: {
         ...current.texts,
         ...texts
+      }
+    },
+    adminUser
+  );
+}
+
+/**
+ * Update App Version & APK Update Settings (Admin only)
+ */
+export async function updateAppUpdateConfig(
+  appUpdate: Partial<AppUpdateConfig>,
+  adminUser?: { uid?: string; email?: string; displayName?: string }
+): Promise<PortalConfig> {
+  const current = await getPortalConfig();
+  const existingUpdate = current.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
+  return savePortalConfig(
+    {
+      appUpdate: {
+        ...existingUpdate,
+        ...appUpdate
       }
     },
     adminUser

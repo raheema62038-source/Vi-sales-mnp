@@ -225,12 +225,24 @@ export interface PortalTexts {
   announcement?: string;
 }
 
+export interface AppUpdateConfig {
+  latestVersionName: string;
+  latestVersionCode: number;
+  apkDownloadUrl: string;
+  updateMessage?: string;
+  releaseNotes?: string;
+  forceUpdate: boolean;
+  enabled: boolean;
+  releasedAt?: string;
+}
+
 export interface PortalConfig {
   banners: PortalBanner[];
   logo: PortalLogoConfig;
   offers: PortalOfferItem[];
   adminHelp: PortalAdminHelp;
   texts: PortalTexts;
+  appUpdate?: AppUpdateConfig;
   updatedAt?: string;
   updatedBy?: string;
   updatedByEmail?: string;
@@ -245,6 +257,7 @@ export type AdminSection =
   | 'logo'
   | 'admin-help'
   | 'locations'
+  | 'app-updates'
   | 'settings';
 
 

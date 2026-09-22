@@ -22,7 +22,8 @@ import {
   X,
   Mail,
   ChevronRight,
-  MessageCircle
+  MessageCircle,
+  Download
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -31,6 +32,18 @@ import {
   subscribeToPortalConfig, 
   DEFAULT_PORTAL_CONFIG 
 } from '../services/portalConfigService';
+import { AppUpdateModal } from './AppUpdateModal';
+import { 
+  getCurrentAppVersion, 
+  INSTALLED_APP_VERSION, 
+  isNewerVersionAvailable, 
+  AppVersionInfo 
+} from '../config/appVersion';
+import { 
+  hasDismissedUpdateForSession, 
+  dismissUpdateForSession, 
+  DEFAULT_APP_UPDATE_CONFIG 
+} from '../services/appUpdateService';
 
 interface CustomerPortalProps {
   leads: Lead[];
@@ -52,6 +65,73 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const [portalConfig, setPortalConfig] = useState<PortalConfig>(DEFAULT_PORTAL_CONFIG);
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // App Version & Automatic APK Update Check
+  const [installedVersion, setInstalledVersion] = useState<AppVersionInfo>(INSTALLED_APP_VERSION);
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false);
+  const [isTestPopupOpen, setIsTestPopupOpen] = useState<boolean>(false);
+  const [manualUpdateNotice, setManualUpdateNotice] = useState<string | null>(null);
+
+  // 1. Fetch current installed app version (from native Android App.getInfo() or base config)
+  useEffect(() => {
+    let isMounted = true;
+    getCurrentAppVersion()
+      .then((info) => {
+        if (isMounted) setInstalledVersion(info);
+      })
+      .catch((err) => {
+        console.warn('App version detection notice:', err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 2. Automatic check when customer opens the app (Requirement 3)
+  useEffect(() => {
+    const updateConfig = portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
+    if (!updateConfig || updateConfig.enabled === false) {
+      setIsUpdateModalOpen(false);
+      return;
+    }
+
+    const newerAvailable = isNewerVersionAvailable(installedVersion, updateConfig);
+    if (!newerAvailable) {
+      setIsUpdateModalOpen(false);
+      return;
+    }
+
+    // If forceUpdate is ON (Requirement 15)
+    if (updateConfig.forceUpdate) {
+      setIsUpdateModalOpen(true);
+      return;
+    }
+
+    // If forceUpdate is OFF, verify customer hasn't selected "Later" this session (Requirement 8)
+    const isDismissed = hasDismissedUpdateForSession(updateConfig.latestVersionCode);
+    if (!isDismissed) {
+      setIsUpdateModalOpen(true);
+    } else {
+      setIsUpdateModalOpen(false);
+    }
+  }, [portalConfig.appUpdate, installedVersion]);
+
+  const handleDismissUpdateLater = () => {
+    const updateConfig = portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
+    dismissUpdateForSession(updateConfig.latestVersionCode);
+    setIsUpdateModalOpen(false);
+  };
+
+  const handleManualCheckUpdates = () => {
+    const updateConfig = portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
+    const newerAvailable = isNewerVersionAvailable(installedVersion, updateConfig);
+    if (newerAvailable) {
+      setIsUpdateModalOpen(true);
+    } else {
+      setManualUpdateNotice(isHindi ? '✓ आपका ऐप नवीनतम वर्जन पर है!' : '✓ Your app is up to date!');
+      setTimeout(() => setManualUpdateNotice(null), 3000);
+    }
+  };
 
   // Subscribe to real-time Admin-controlled portal config (Logo, Admin Help number)
   useEffect(() => {
@@ -579,9 +659,42 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             </div>
           </div>
 
-          <p className="text-[11px] text-center text-slate-400 font-medium">
-            {adminHelp.supportTitle || 'VI 5G Doorstep SIM Service Mehkar'} • {adminHelp.supportHours || '8:00 AM - 9:00 PM'}
-          </p>
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2 pt-2 text-[11px] text-slate-400 font-medium">
+            <span>{adminHelp.supportTitle || 'VI 5G Doorstep SIM Service Mehkar'} • {adminHelp.supportHours || '8:00 AM - 9:00 PM'}</span>
+            <span className="hidden sm:inline">•</span>
+            <div className="inline-flex items-center gap-2">
+              <span className="font-mono text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md text-[10px] font-bold border border-slate-200">
+                App v{installedVersion.versionName}
+              </span>
+              <button
+                type="button"
+                id="btn-customer-check-update"
+                onClick={handleManualCheckUpdates}
+                className="text-red-600 hover:text-red-700 font-bold hover:underline cursor-pointer flex items-center gap-1 transition-colors"
+                title={isHindi ? 'ऐप अपडेट चेक करें' : 'Check for app update'}
+              >
+                <Download className="w-3 h-3" />
+                <span>{isHindi ? 'अपडेट चेक करें' : 'Check Update'}</span>
+              </button>
+              <span className="text-slate-300">|</span>
+              <button
+                type="button"
+                id="btn-test-customer-popup"
+                onClick={() => setIsTestPopupOpen(true)}
+                className="text-amber-600 hover:text-amber-700 font-bold hover:underline cursor-pointer flex items-center gap-1 transition-colors"
+                title={isHindi ? 'ग्राहक अपडेट पॉपअप टेस्ट करें' : 'Test Customer Popup'}
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>{isHindi ? 'पॉपअप टेस्ट करें' : 'Test Customer Popup'}</span>
+              </button>
+            </div>
+          </div>
+
+          {manualUpdateNotice && (
+            <p className="text-center text-xs font-bold text-emerald-600 animate-in fade-in">
+              {manualUpdateNotice}
+            </p>
+          )}
         </div>
       </footer>
 
@@ -914,6 +1027,27 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           </div>
         </div>
       )}
+
+      {/* =================================================================== */}
+      {/* 4. APP UPDATE MODAL: Android APK Automatic Update System            */}
+      {/* =================================================================== */}
+      <AppUpdateModal
+        isOpen={isUpdateModalOpen || isTestPopupOpen}
+        installedVersion={
+          isTestPopupOpen 
+            ? { versionName: '1.0', versionCode: 1, appId: 'com.vi.salesmnp', isNative: false } 
+            : installedVersion
+        }
+        updateConfig={portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG}
+        onDismissLater={() => {
+          if (isTestPopupOpen) {
+            setIsTestPopupOpen(false);
+          } else {
+            handleDismissUpdateLater();
+          }
+        }}
+        isHindi={isHindi}
+      />
     </div>
   );
 };
