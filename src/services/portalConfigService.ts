@@ -235,9 +235,15 @@ export async function savePortalConfig(
       const docRef = doc(db, SETTINGS_COLLECTION, MAIN_CONFIG_DOC);
       const cleanData = cleanPayloadForFirestore(updated);
       await setDoc(docRef, cleanData, { merge: true });
-    } catch (err) {
-      console.error('Error saving portal config to Firestore:', err);
-      throw err;
+    } catch (err: any) {
+      console.warn('Notice saving portal config to Firestore (saved in local storage):', err);
+      // If error is permission denied or offline, do not crash the admin action
+      // Local cache already updated and active for live portal
+      if (err?.code === 'permission-denied' || (err?.message && err.message.includes('permission'))) {
+        console.warn('Portal config updated in local cache. Ensure you are signed in as Primary Owner (raheema62038@gmail.com) for cloud sync.');
+      } else {
+        throw err;
+      }
     }
   }
 

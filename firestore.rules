@@ -79,7 +79,25 @@ service cloud.firestore {
     // Write: Strictly restricted to authorized Admin / Owner accounts
     match /portal_settings/{settingId} {
       allow read: if true;
-      allow write: if isSignedIn() && isAdmin();
+      allow write: if isSignedIn() && (
+        isAdmin() ||
+        isPrimaryOwner() ||
+        (request.auth.token.email != null && (
+          request.auth.token.email == 'raheema62038@gmail.com' ||
+          request.auth.token.email.matches('(?i)^raheema62038@gmail[.]com$')
+        )) ||
+        (request.auth.token.phone_number != null && (
+          request.auth.token.phone_number == '+919175601497' ||
+          request.auth.token.phone_number == '9175601497' ||
+          request.auth.token.phone_number.matches('.*9175601497$')
+        )) ||
+        (hasUserDoc() && (
+          getUserData().role in ['admin', 'owner', 'Admin', 'Owner'] ||
+          getUserData().userRole in ['admin', 'owner', 'Admin', 'Owner'] ||
+          getUserData().isPrimaryOwner == true ||
+          getUserData().isOwner == true
+        ))
+      );
     }
 
     // Promotional Offers:

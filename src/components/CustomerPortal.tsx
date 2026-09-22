@@ -21,7 +21,8 @@ import {
   CheckCheck,
   X,
   Mail,
-  ChevronRight
+  ChevronRight,
+  MessageCircle
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
@@ -64,8 +65,15 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const logo = portalConfig.logo || DEFAULT_PORTAL_CONFIG.logo;
   const isHindi = language === 'hi';
 
-  // Admin Mobile Number (clean 10 digits or with +91)
+  // Admin Mobile & WhatsApp Numbers
   const adminMobileNumber = (adminHelp.callNumber || adminHelp.helpNumber || '9175601497').replace(/\D/g, '').slice(-10) || '9175601497';
+  const adminWhatsAppRaw = adminHelp.whatsappNumber || adminHelp.callNumber || '9175601497';
+  const adminWhatsAppClean = adminWhatsAppRaw.replace(/\D/g, '').slice(-10) || '9175601497';
+  const adminWhatsAppFormatted = `+91 ${adminWhatsAppClean}`;
+  const defaultWhatsAppMsg = isHindi
+    ? 'नमस्ते Admin, मुझे Vi Sales MNP / SIM Porting के बारे में जानकारी चाहिए।'
+    : 'Hello Admin, I would like to inquire about Vi Sales MNP / SIM Porting.';
+  const adminWhatsAppUrl = `https://wa.me/91${adminWhatsAppClean}?text=${encodeURIComponent(defaultWhatsAppMsg)}`;
 
   // Strict Customer Data Isolation: A customer can ONLY view their own bookings
   const myLeads = useMemo(() => {
@@ -320,6 +328,52 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
           </div>
         </section>
 
+        {/* =================================================================== */}
+        {/* ADMIN WHATSAPP CONTACT: "Admin से WhatsApp पर संपर्क करें" */}
+        {/* =================================================================== */}
+        <section id="section-admin-whatsapp-contact" className="animate-in fade-in duration-200">
+          <div className="bg-gradient-to-r from-emerald-50 via-green-50 to-emerald-100/70 border-2 border-emerald-300/80 rounded-3xl p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-[#25D366] text-white flex items-center justify-center shadow-md shrink-0">
+                <MessageCircle className="w-6 h-6 stroke-[2.5]" />
+              </div>
+              <div className="space-y-0.5">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-200/80 text-emerald-950 text-[10px] font-black uppercase tracking-wider">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                  <span>{isHindi ? 'सीधा संपर्क' : 'Direct Support'}</span>
+                </div>
+                <h3 className="font-black text-base sm:text-lg text-emerald-950 tracking-tight leading-snug">
+                  {isHindi ? 'Admin से WhatsApp पर संपर्क करें' : 'Contact Admin on WhatsApp'}
+                </h3>
+                <p className="text-xs text-emerald-800 font-semibold flex items-center gap-1.5">
+                  <span>{isHindi ? 'WhatsApp नंबर:' : 'WhatsApp Number:'}</span>
+                  <a 
+                    href={adminWhatsAppUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-mono font-black text-emerald-950 text-sm hover:underline"
+                  >
+                    {adminWhatsAppFormatted}
+                  </a>
+                </p>
+              </div>
+            </div>
+
+            <div className="w-full sm:w-auto shrink-0">
+              <a
+                href={adminWhatsAppUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                id="btn-customer-whatsapp-admin"
+                className="w-full sm:w-auto px-5 py-3 rounded-2xl bg-[#25D366] hover:bg-[#20ba5a] active:scale-95 text-white font-black text-sm shadow-md flex items-center justify-center gap-2 transition-all cursor-pointer"
+              >
+                <MessageCircle className="w-5 h-5 fill-white/20" />
+                <span>{isHindi ? 'WhatsApp पर संपर्क करें' : 'Chat on WhatsApp'}</span>
+              </a>
+            </div>
+          </div>
+        </section>
+
         {/* 1. BOOKING: Existing / Current Booking on Dashboard */}
         <section id="section-existing-booking" className="space-y-3">
           <div className="flex items-center justify-between px-1">
@@ -451,37 +505,83 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
       </main>
 
       {/* =================================================================== */}
-      {/* 4. ADMIN MOBILE NUMBER: Shown at the very bottom of Customer Portal */}
+      {/* 4. ADMIN CONTACT OPTIONS: Shown at the bottom of Customer Portal */}
       {/* =================================================================== */}
-      <footer id="footer-admin-mobile" className="mt-8 border-t border-slate-200/80 bg-white py-5">
-        <div className="max-w-4xl mx-auto px-4">
-          <div className="max-w-sm mx-auto bg-slate-50 rounded-2xl p-3.5 border border-slate-200 shadow-2xs flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-10 h-10 rounded-xl bg-red-100 text-red-600 flex items-center justify-center font-bold shrink-0">
-                <PhoneCall className="w-5 h-5" />
+      <footer id="footer-admin-mobile" className="mt-8 border-t border-slate-200/80 bg-white py-6">
+        <div className="max-w-4xl mx-auto px-4 space-y-4">
+          <div className="text-center">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+              {isHindi ? 'मदद या सहायता के लिए एडमिन से संपर्क करें' : 'Need Assistance? Contact Admin Directly'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl mx-auto">
+            {/* WhatsApp Contact Box (Green) */}
+            <div className="bg-emerald-50/90 rounded-2xl p-3.5 border border-emerald-200 shadow-2xs flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-[#25D366] text-white flex items-center justify-center font-bold shrink-0">
+                  <MessageCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="text-[10px] text-emerald-800 font-bold uppercase tracking-wider block">
+                    {isHindi ? 'Admin WhatsApp नंबर' : 'Admin WhatsApp'}
+                  </span>
+                  <a
+                    href={adminWhatsAppUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="font-black text-emerald-950 text-sm hover:underline"
+                  >
+                    {adminWhatsAppFormatted}
+                  </a>
+                </div>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">
-                  {isHindi ? 'एडमिन मोबाइल नंबर' : 'Admin Mobile Number'}
-                </span>
-                <a
-                  href={`tel:${adminMobileNumber}`}
-                  className="font-black text-slate-900 text-base hover:text-red-600 transition-colors"
-                >
-                  +91 {adminMobileNumber}
-                </a>
-              </div>
+
+              <a
+                href={adminWhatsAppUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                id="btn-footer-whatsapp-admin"
+                className="px-3.5 py-2 bg-[#25D366] hover:bg-[#20ba5a] text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-xs transition-transform active:scale-95 cursor-pointer"
+              >
+                <MessageCircle className="w-3.5 h-3.5" />
+                <span>{isHindi ? 'WhatsApp' : 'Chat'}</span>
+              </a>
             </div>
 
-            <a
-              href={`tel:${adminMobileNumber}`}
-              id="btn-call-admin-mobile"
-              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-xs transition-transform active:scale-95 cursor-pointer"
-            >
-              <PhoneCall className="w-3.5 h-3.5" />
-              <span>{isHindi ? 'कॉल करें' : 'Call'}</span>
-            </a>
+            {/* Call Contact Box */}
+            <div className="bg-slate-50 rounded-2xl p-3.5 border border-slate-200 shadow-2xs flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-red-100 text-red-600 flex items-center justify-center font-bold shrink-0">
+                  <PhoneCall className="w-5 h-5" />
+                </div>
+                <div>
+                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider block">
+                    {isHindi ? 'एडमिन कॉल नंबर' : 'Admin Call Number'}
+                  </span>
+                  <a
+                    href={`tel:${adminMobileNumber}`}
+                    className="font-black text-slate-900 text-sm hover:text-red-600 transition-colors"
+                  >
+                    +91 {adminMobileNumber}
+                  </a>
+                </div>
+              </div>
+
+              <a
+                href={`tel:${adminMobileNumber}`}
+                id="btn-call-admin-mobile"
+                className="px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-xs transition-transform active:scale-95 cursor-pointer"
+              >
+                <PhoneCall className="w-3.5 h-3.5" />
+                <span>{isHindi ? 'कॉल करें' : 'Call'}</span>
+              </a>
+            </div>
           </div>
+
+          <p className="text-[11px] text-center text-slate-400 font-medium">
+            {adminHelp.supportTitle || 'VI 5G Doorstep SIM Service Mehkar'} • {adminHelp.supportHours || '8:00 AM - 9:00 PM'}
+          </p>
         </div>
       </footer>
 
@@ -787,8 +887,21 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               )}
             </div>
 
-            {/* Close Button */}
-            <div className="pt-2">
+            {/* Quick Contact Admin via WhatsApp for this Booking */}
+            <div className="pt-2 space-y-2">
+              <a
+                href={`https://wa.me/91${adminWhatsAppClean}?text=${encodeURIComponent(
+                  `नमस्ते Admin, मेरी Vi बुकिंग (मोबाइल: ${selectedLead.mobileNumber}, स्थिति: ${selectedLead.bookingStatus || selectedLead.status}) के बारे में सहायता चाहिए।`
+                )}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                id="btn-lead-whatsapp-inquiry"
+                className="w-full py-3 rounded-xl bg-[#25D366] hover:bg-[#20ba5a] text-white font-bold text-xs flex items-center justify-center gap-2 cursor-pointer shadow-xs transition-colors"
+              >
+                <MessageCircle className="w-4 h-4" />
+                <span>{isHindi ? 'इस बुकिंग के लिए WhatsApp पर संपर्क करें' : 'Inquire on WhatsApp about this Booking'}</span>
+              </a>
+
               <button
                 type="button"
                 id="btn-close-lead-modal-bottom"
