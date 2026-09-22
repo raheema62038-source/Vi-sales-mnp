@@ -73,6 +73,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false);
   const [isTestPopupOpen, setIsTestPopupOpen] = useState<boolean>(false);
   const [manualUpdateNotice, setManualUpdateNotice] = useState<string | null>(null);
+  const [isUpdateAvailable, setIsUpdateAvailable] = useState<boolean>(false);
 
   // 1. Fetch current installed app version (from native Android App.getInfo() or base config)
   useEffect(() => {
@@ -98,6 +99,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
     performAppUpdateCheck(baseConfig, installedVersion)
       .then((res) => {
         if (!isMounted) return;
+        setIsUpdateAvailable(Boolean(res.updateAvailable));
         if (res.shouldShowPopup) {
           setIsUpdateModalOpen(true);
         } else {
@@ -127,9 +129,11 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
       const res = await performAppUpdateCheck(baseConfig, installedVersion);
 
       if (res.updateAvailable) {
+        setIsUpdateAvailable(true);
         setManualUpdateNotice(null);
         setIsUpdateModalOpen(true);
       } else {
+        setIsUpdateAvailable(false);
         // Requirement 3: "आपका ऐप पहले से नवीनतम संस्करण पर है।"
         setManualUpdateNotice(
           isHindi 
@@ -606,10 +610,35 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
       {/* =================================================================== */}
       <footer id="footer-admin-mobile" className="mt-8 border-t border-slate-200/80 bg-white py-6">
         <div className="max-w-4xl mx-auto px-4 space-y-4">
-          <div className="text-center">
+          <div className="text-center space-y-2">
             <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
               {isHindi ? 'मदद या सहायता के लिए एडमिन से संपर्क करें' : 'Need Assistance? Contact Admin Directly'}
             </span>
+
+            {/* Automatic Update Badge: Shown only when an update is available */}
+            {isUpdateAvailable && (
+              <div className="inline-flex items-center justify-center animate-bounce-subtle">
+                <button
+                  type="button"
+                  id="btn-customer-care-update-badge"
+                  onClick={() => setIsUpdateModalOpen(true)}
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-linear-to-r from-red-600 via-rose-600 to-red-700 text-white shadow-md shadow-red-500/25 hover:shadow-lg hover:shadow-red-500/40 hover:scale-105 active:scale-95 transition-all duration-200 cursor-pointer border border-red-400/50 group"
+                  title={isHindi ? 'नया अपडेट उपलब्ध है - अभी अपडेट करें' : 'New update available - Click to install'}
+                >
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-white"></span>
+                  </span>
+                  <span className="text-xs font-bold text-white tracking-wide">
+                    🔴 {isHindi ? 'नया अपडेट उपलब्ध है' : 'New Update Available'}
+                  </span>
+                  <span className="bg-white/20 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full text-white backdrop-blur-xs border border-white/25">
+                    NEW UPDATE
+                  </span>
+                  <Download className="w-3.5 h-3.5 text-white group-hover:translate-y-0.5 transition-transform" />
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl mx-auto">
