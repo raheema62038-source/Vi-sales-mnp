@@ -132,7 +132,7 @@ jobs:
             echo "APK_TYPE=debug" >> $GITHUB_ENV
           fi
 
-          # Generate release version metadata JSON (Requirement 2 & 9)
+          # Generate release version metadata JSON
           cat <<EOF > final-apk/version.json
           {
             "appId": "com.vi.salesmnp",
@@ -162,6 +162,20 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_NOTES: |
+            ### Vi Sales MNP Android APK
+            - **Application / Package ID:** `com.vi.salesmnp`
+            - **Version Name:** ${{ env.APP_VERSION_NAME }}
+            - **Version Code:** ${{ env.APP_VERSION_CODE }}
+            - **Build Type:** Signed Release APK
+            - **Direct Download (Release APK):** [`app-release.apk`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-release.apk)
+            - **Direct Download (Compatibility):** [`app-debug.apk`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-debug.apk)
+            - **Version Metadata:** [`version.json`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/version.json)
+
+            #### Release Notes:
+            - आधिकारिक GitHub Release ऑटो-अपडेट सिस्टम
+            - सुरक्षित APK डाउनलोड व इंस्टॉलेशन
+            - डोरस्टेप सिम डिलीवरी व स्थिति ट्रैकिंग
         run: |
           TAG_NAME="v${{ env.APP_VERSION_NAME }}"
           RELEASE_TITLE="Vi Sales MNP APK v${{ env.APP_VERSION_NAME }} (Release ${{ env.APP_VERSION_CODE }})"
@@ -177,20 +191,6 @@ jobs:
             git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
             git push origin "$TAG_NAME" || true
           fi
-
-          RELEASE_NOTES="### Vi Sales MNP Android APK
-- **Application / Package ID:** \`com.vi.salesmnp\`
-- **Version Name:** ${{ env.APP_VERSION_NAME }}
-- **Version Code:** ${{ env.APP_VERSION_CODE }}
-- **Build Type:** Signed Release APK
-- **Direct Download (Release APK):** [\`app-release.apk\`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-release.apk)
-- **Direct Download (Compatibility):** [\`app-debug.apk\`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-debug.apk)
-- **Version Metadata:** [\`version.json\`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/version.json)
-
-#### Release Notes:
-- आधिकारिक GitHub Release ऑटो-अपडेट सिस्टम
-- सुरक्षित APK डाउनलोड व इंस्टॉलेशन
-- डोरस्टेप सिम डिलीवरी व स्थिति ट्रैकिंग"
 
           # 2. Check if release already exists using GitHub CLI
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
