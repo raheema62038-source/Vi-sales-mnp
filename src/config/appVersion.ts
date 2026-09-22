@@ -15,8 +15,8 @@ export interface AppVersionInfo {
  * installed versionCode and versionName from AndroidManifest / build.gradle.
  */
 export const INSTALLED_APP_VERSION: AppVersionInfo = {
-  versionName: '1.1',
-  versionCode: 2,
+  versionName: '1.2',
+  versionCode: 3,
   appId: 'com.vi.salesmnp',
   isNative: false
 };

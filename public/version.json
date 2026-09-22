@@ -1,0 +1,12 @@
+{
+  "appId": "com.vi.salesmnp",
+  "appName": "Vi Sales MNP",
+  "versionName": "1.2",
+  "versionCode": 3,
+  "minSdkVersion": 22,
+  "targetSdkVersion": 34,
+  "downloadUrl": "https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-release.apk",
+  "compatibilityDownloadUrl": "https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-debug.apk",
+  "releaseNotes": "• आधिकारिक GitHub Release v1.2 अपडेट\n• स्वचालित अपडेट डिटेक्शन व डायरेक्ट डाउनलोड\n• परफॉरमेंस व सुरक्षा संवर्द्धन",
+  "mandatory": false
+}

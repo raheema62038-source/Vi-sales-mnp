@@ -42,7 +42,9 @@ import {
 import { 
   hasDismissedUpdateForSession, 
   dismissUpdateForSession, 
-  DEFAULT_APP_UPDATE_CONFIG 
+  DEFAULT_APP_UPDATE_CONFIG,
+  performAppUpdateCheck,
+  fetchLatestFromGitHub
 } from '../services/appUpdateService';
 
 interface CustomerPortalProps {
@@ -87,33 +89,29 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
     };
   }, []);
 
-  // 2. Automatic check when customer opens the app (Requirement 3)
+  // 2. Automatic non-blocking check when customer opens the app (Requirements 2, 3, 7, 8)
   useEffect(() => {
-    const updateConfig = portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
-    if (!updateConfig || updateConfig.enabled === false) {
-      setIsUpdateModalOpen(false);
-      return;
-    }
+    let isMounted = true;
+    const baseConfig = portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
 
-    const newerAvailable = isNewerVersionAvailable(installedVersion, updateConfig);
-    if (!newerAvailable) {
-      setIsUpdateModalOpen(false);
-      return;
-    }
+    // Run network check asynchronously without blocking main thread
+    performAppUpdateCheck(baseConfig, installedVersion)
+      .then((res) => {
+        if (!isMounted) return;
+        if (res.shouldShowPopup) {
+          setIsUpdateModalOpen(true);
+        } else {
+          setIsUpdateModalOpen(false);
+        }
+      })
+      .catch((err) => {
+        // Safe catch: never crash the app on network/GitHub issues
+        console.warn('Startup app update check note:', err);
+      });
 
-    // If forceUpdate is ON (Requirement 15)
-    if (updateConfig.forceUpdate) {
-      setIsUpdateModalOpen(true);
-      return;
-    }
-
-    // If forceUpdate is OFF, verify customer hasn't selected "Later" this session (Requirement 8)
-    const isDismissed = hasDismissedUpdateForSession(updateConfig.latestVersionCode);
-    if (!isDismissed) {
-      setIsUpdateModalOpen(true);
-    } else {
-      setIsUpdateModalOpen(false);
-    }
+    return () => {
+      isMounted = false;
+    };
   }, [portalConfig.appUpdate, installedVersion]);
 
   const handleDismissUpdateLater = () => {
@@ -122,14 +120,33 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
     setIsUpdateModalOpen(false);
   };
 
-  const handleManualCheckUpdates = () => {
-    const updateConfig = portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
-    const newerAvailable = isNewerVersionAvailable(installedVersion, updateConfig);
-    if (newerAvailable) {
-      setIsUpdateModalOpen(true);
-    } else {
-      setManualUpdateNotice(isHindi ? '✓ आपका ऐप नवीनतम वर्जन पर है!' : '✓ Your app is up to date!');
-      setTimeout(() => setManualUpdateNotice(null), 3000);
+  const handleManualCheckUpdates = async () => {
+    setManualUpdateNotice(isHindi ? '🔄 अपडेट की जाँच की जा रही है...' : '🔄 Checking for updates...');
+    try {
+      const baseConfig = portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG;
+      const res = await performAppUpdateCheck(baseConfig, installedVersion);
+
+      if (res.updateAvailable) {
+        setManualUpdateNotice(null);
+        setIsUpdateModalOpen(true);
+      } else {
+        // Requirement 3: "आपका ऐप पहले से नवीनतम संस्करण पर है।"
+        setManualUpdateNotice(
+          isHindi 
+            ? '✓ आपका ऐप पहले से नवीनतम संस्करण पर है।' 
+            : '✓ Your app is already up to date.'
+        );
+        setTimeout(() => setManualUpdateNotice(null), 4000);
+      }
+    } catch (err) {
+      console.warn('Manual update check error:', err);
+      // Requirement 7: "अपडेट की जाँच नहीं हो सकी। कृपया बाद में पुनः प्रयास करें।"
+      setManualUpdateNotice(
+        isHindi
+          ? '⚠️ अपडेट की जाँच नहीं हो सकी। कृपया बाद में पुनः प्रयास करें।'
+          : '⚠️ Could not check for updates. Please try again later.'
+      );
+      setTimeout(() => setManualUpdateNotice(null), 4000);
     }
   };
 
@@ -807,6 +824,30 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                   <span className="font-bold text-slate-900 text-xs">{profileDetails.circle}</span>
                 </div>
                 <ShieldCheck className="w-5 h-5 text-red-600" />
+              </div>
+
+              {/* Requirement 3: Check for Update option in settings/profile menu */}
+              <div className="p-3 bg-slate-50 rounded-2xl border border-slate-200/80 flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] text-slate-500 font-bold uppercase block">
+                    {isHindi ? 'ऐप संस्करण (App Version)' : 'App Version'}
+                  </span>
+                  <span className="font-mono font-bold text-slate-800 text-xs">
+                    v{installedVersion.versionName} (Build {installedVersion.versionCode})
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  id="btn-profile-check-update"
+                  onClick={() => {
+                    setIsProfileOpen(false);
+                    handleManualCheckUpdates();
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-[11px] flex items-center gap-1.5 shadow-xs transition-transform active:scale-95 cursor-pointer"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>{isHindi ? 'अपडेट चेक करें' : 'Check for Update'}</span>
+                </button>
               </div>
             </div>
 

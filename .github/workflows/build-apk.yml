@@ -2,21 +2,25 @@ name: Build Android APK (Vi Sales MNP)
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
     tags:
       - 'v*'
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'App Version Name (e.g. 1.2)'
+        required: false
+        default: ''
+      version_code:
+        description: 'App Version Code integer (must be higher than previous, e.g. 3)'
+        required: false
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     permissions:
       contents: write
 
@@ -25,6 +29,40 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Calculate Dynamic App Version Name & Code
+        id: versioning
+        run: |
+          # 1. Check if triggered by tag (e.g. refs/tags/v1.2)
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RAW_TAG="${{ github.ref_name }}"
+            TAG_VER="${RAW_TAG#v}"
+          elif [ -n "${{ github.event.inputs.version_name }}" ]; then
+            TAG_VER="${{ github.event.inputs.version_name }}"
+          else
+            TAG_VER="1.2"
+          fi
+
+          # 2. Extract commit count to ensure strictly increasing versionCode (never reused)
+          TOTAL_COMMITS=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+          # Baseline base code for v1.2 is 3
+          CALCULATED_CODE=$(( TOTAL_COMMITS > 3 ? TOTAL_COMMITS : 3 ))
+
+          if [ -n "${{ github.event.inputs.version_code }}" ]; then
+            FINAL_CODE="${{ github.event.inputs.version_code }}"
+          else
+            FINAL_CODE="$CALCULATED_CODE"
+          fi
+
+          # If tag is v1.2 and no override, keep version 1.2 and code 3
+          if [ "$TAG_VER" = "1.2" ] && [ -z "${{ github.event.inputs.version_code }}" ]; then
+            FINAL_CODE=3
+          fi
+
+          echo "APP_VERSION_NAME=$TAG_VER" >> $GITHUB_ENV
+          echo "APP_VERSION_CODE=$FINAL_CODE" >> $GITHUB_ENV
+          echo "Resolved App Version Name: $TAG_VER"
+          echo "Resolved App Version Code: $FINAL_CODE"
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -37,74 +75,78 @@ jobs:
       - name: Setup Java JDK 21
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '21'
 
       - name: Build Web App & Sync Capacitor
         run: npm run build:android
 
-      - name: Setup Android Release Keystore
+      - name: Setup Android Release Keystore (Persistent GitHub Secret)
         id: setup_keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "Persistent Release Keystore detected."
-            mkdir -p "$HOME/android-signing"
-            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$HOME/android-signing/release-key.jks"
-
-            echo "HAS_KEYSTORE=true" >> "$GITHUB_ENV"
-            echo "KEYSTORE_PATH=$HOME/android-signing/release-key.jks" >> "$GITHUB_ENV"
-
+            echo "Persistent Release Keystore detected in secrets. Decoding..."
+            mkdir -p $HOME/android-signing
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > $HOME/android-signing/release-key.jks
+            echo "HAS_KEYSTORE=true" >> $GITHUB_ENV
+            echo "KEYSTORE_PATH=$HOME/android-signing/release-key.jks" >> $GITHUB_ENV
             echo "Keystore successfully prepared."
           else
-            echo "HAS_KEYSTORE=false" >> "$GITHUB_ENV"
-            echo "No persistent keystore found. Building debug fallback."
+            echo "HAS_KEYSTORE=false" >> $GITHUB_ENV
+            echo "No persistent keystore found in secrets. Will build debug/unsigned fallback."
           fi
 
-      - name: Build Android Release APK
+      - name: Build Android Release APK (Signed via Keystore)
         working-directory: android
         env:
+          APP_VERSION_NAME: ${{ env.APP_VERSION_NAME }}
+          APP_VERSION_CODE: ${{ env.APP_VERSION_CODE }}
           ANDROID_KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x ./gradlew
-
           if [ "$HAS_KEYSTORE" = "true" ]; then
-            echo "Building signed Release APK..."
+            echo "Building signed Release APK with VersionName=$APP_VERSION_NAME, VersionCode=$APP_VERSION_CODE..."
             ./gradlew assembleRelease
           else
-            echo "Building fallback Debug APK..."
+            echo "Building fallback APK (assembleDebug)..."
             ./gradlew assembleDebug
           fi
 
-      - name: Prepare Final Output APKs
+      - name: Prepare Final Output APKs & Metadata
         run: |
           mkdir -p final-apk
-
           if [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
             echo "Found signed release APK."
-
-            cp android/app/build/outputs/apk/release/app-release.apk \
-              final-apk/app-release.apk
-
-            cp android/app/build/outputs/apk/release/app-release.apk \
-              final-apk/app-debug.apk
-
-            echo "APK_TYPE=release" >> "$GITHUB_ENV"
+            cp android/app/build/outputs/apk/release/app-release.apk final-apk/app-release.apk
+            cp android/app/build/outputs/apk/release/app-release.apk final-apk/app-debug.apk
+            echo "APK_TYPE=release" >> $GITHUB_ENV
           else
             echo "Using debug APK as fallback."
-
-            cp android/app/build/outputs/apk/debug/app-debug.apk \
-              final-apk/app-release.apk
-
-            cp android/app/build/outputs/apk/debug/app-debug.apk \
-              final-apk/app-debug.apk
-
-            echo "APK_TYPE=debug" >> "$GITHUB_ENV"
+            cp android/app/build/outputs/apk/debug/app-debug.apk final-apk/app-release.apk
+            cp android/app/build/outputs/apk/debug/app-debug.apk final-apk/app-debug.apk
+            echo "APK_TYPE=debug" >> $GITHUB_ENV
           fi
+
+          # Generate release version metadata JSON (Requirement 2 & 9)
+          cat <<EOF > final-apk/version.json
+          {
+            "appId": "com.vi.salesmnp",
+            "appName": "Vi Sales MNP",
+            "versionName": "${{ env.APP_VERSION_NAME }}",
+            "versionCode": ${{ env.APP_VERSION_CODE }},
+            "minSdkVersion": 22,
+            "targetSdkVersion": 34,
+            "downloadUrl": "https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-release.apk",
+            "compatibilityDownloadUrl": "https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-debug.apk",
+            "releaseNotes": "• आधिकारिक Vi Sales MNP Release\n• सुरक्षित APK डाउनलोड व इन-प्लेस अपडेट",
+            "publishedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          }
+          EOF
 
           ls -lh final-apk/
 
@@ -115,60 +157,51 @@ jobs:
           path: final-apk/*
           if-no-files-found: error
 
-      - name: Create or Update GitHub Release
+      - name: Create or Update GitHub Release & Upload Signed APK
         if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAG_NAME="${GITHUB_REF_NAME}"
-          else
-            TAG_NAME="v1.1"
-          fi
-
-          RELEASE_TITLE="Vi Sales MNP APK v1.1 (Signed Release)"
-
+          TAG_NAME="v${{ env.APP_VERSION_NAME }}"
+          RELEASE_TITLE="Vi Sales MNP APK v${{ env.APP_VERSION_NAME }} (Release ${{ env.APP_VERSION_CODE }})"
+          
           echo "Target Tag: $TAG_NAME"
 
+          # 1. Ensure git tag exists
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
+          
           if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
             echo "Creating tag $TAG_NAME..."
             git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
             git push origin "$TAG_NAME" || true
           fi
 
-          cat > release-notes.md <<'EOF'
-          ### Vi Sales MNP Android APK
+          RELEASE_NOTES="### Vi Sales MNP Android APK
+- **Application / Package ID:** \`com.vi.salesmnp\`
+- **Version Name:** ${{ env.APP_VERSION_NAME }}
+- **Version Code:** ${{ env.APP_VERSION_CODE }}
+- **Build Type:** Signed Release APK
+- **Direct Download (Release APK):** [\`app-release.apk\`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-release.apk)
+- **Direct Download (Compatibility):** [\`app-debug.apk\`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-debug.apk)
+- **Version Metadata:** [\`version.json\`](https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/version.json)
 
-          - **Application / Package ID:** `com.vi.salesmnp`
-          - **Version Name:** 1.1
-          - **Version Code:** 2
-          - **Build Type:** Signed Release APK
-          - **Direct Download (Release APK):** [app-release.apk](https://github.com/raheema62038/vi-sales-mnp/releases/latest/download/app-release.apk)
-          - **Direct Download (Compatibility):** [app-debug.apk](https://github.com/raheema62038/vi-sales-mnp/releases/latest/download/app-debug.apk)
-          EOF
+#### Release Notes:
+- आधिकारिक GitHub Release ऑटो-अपडेट सिस्टम
+- सुरक्षित APK डाउनलोड व इंस्टॉलेशन
+- डोरस्टेप सिम डिलीवरी व स्थिति ट्रैकिंग"
 
+          # 2. Check if release already exists using GitHub CLI
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Release $TAG_NAME exists."
-
-            gh release upload "$TAG_NAME" \
-              final-apk/app-release.apk \
-              final-apk/app-debug.apk \
-              --clobber
-
-            gh release edit "$TAG_NAME" \
-              --title "$RELEASE_TITLE" \
-              --notes-file release-notes.md
+            echo "Release $TAG_NAME exists. Uploading signed APK and metadata assets..."
+            gh release upload "$TAG_NAME" final-apk/app-release.apk final-apk/app-debug.apk final-apk/version.json --clobber
+            gh release edit "$TAG_NAME" --title "$RELEASE_TITLE" --notes "$RELEASE_NOTES"
           else
-            echo "Creating new release..."
-
-            gh release create "$TAG_NAME" \
-              final-apk/app-release.apk \
-              final-apk/app-debug.apk \
+            echo "Release $TAG_NAME does not exist. Creating new release..."
+            gh release create "$TAG_NAME" final-apk/app-release.apk final-apk/app-debug.apk final-apk/version.json \
               --title "$RELEASE_TITLE" \
-              --notes-file release-notes.md
+              --notes "$RELEASE_NOTES"
           fi
 
-          echo "GitHub Release successfully created/updated."
+          echo "GitHub Release successfully created/updated with signed release APK and version.json metadata!"

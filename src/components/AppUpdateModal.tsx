@@ -72,7 +72,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
                   <span>{isHindi ? 'नया अपडेट उपलब्ध है' : 'New Update Available'}</span>
                 </div>
                 <h3 className="text-lg font-black tracking-tight leading-snug">
-                  {isHindi ? 'New Update Available' : 'New Update Available'}
+                  {isHindi ? 'नया अपडेट उपलब्ध है' : 'New Update Available'}
                 </h3>
               </div>
             </div>
@@ -177,7 +177,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
 
           {/* Action Buttons (Requirements 4, 15, 16) */}
           <div className="pt-1 flex flex-col sm:flex-row items-center gap-2.5">
-            {/* "Later" Button: Shown ONLY when forceUpdate is OFF (Requirement 15 & 16) */}
+            {/* "Later" Button: Shown ONLY when forceUpdate is OFF (Requirement 4) */}
             {!isForceUpdate && (
               <button
                 type="button"
@@ -185,11 +185,11 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
                 onClick={handleLaterClick}
                 className="w-full sm:w-1/3 py-3 px-4 rounded-2xl bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 font-bold text-xs transition-all cursor-pointer text-center"
               >
-                {isHindi ? 'बाद में (Later)' : 'Later'}
+                {isHindi ? 'बाद में' : 'Later'}
               </button>
             )}
 
-            {/* "Update Now" Button: Opens official APK download URL (Requirement 5) */}
+            {/* "Update Now" Button: Opens official GitHub Release APK download URL (Requirement 4 & 5) */}
             <button
               type="button"
               id="btn-update-now"
@@ -198,7 +198,7 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
               className={`w-full ${!isForceUpdate ? 'sm:w-2/3' : 'sm:w-full'} py-3.5 px-5 rounded-2xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 active:scale-95 text-white font-black text-xs shadow-lg shadow-red-500/25 flex items-center justify-center gap-2 transition-all cursor-pointer`}
             >
               <Download className={`w-4 h-4 ${isOpeningUrl ? 'animate-bounce' : ''}`} />
-              <span>{isHindi ? 'अभी अपडेट करें (Update Now)' : 'Update Now'}</span>
+              <span>{isHindi ? 'अभी अपडेट करें' : 'Update Now'}</span>
               <ExternalLink className="w-3.5 h-3.5 opacity-80" />
             </button>
           </div>

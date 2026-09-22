@@ -2024,7 +2024,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         ...portalConfig,
                         appUpdate: {
                           ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
-                          apkDownloadUrl: 'https://github.com/raheema62038/vi-sales-mnp/releases/latest/download/app-release.apk'
+                          apkDownloadUrl: 'https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-release.apk'
                         }
                       })
                     }
@@ -2040,7 +2040,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         ...portalConfig,
                         appUpdate: {
                           ...(portalConfig.appUpdate || DEFAULT_APP_UPDATE_CONFIG),
-                          apkDownloadUrl: 'https://github.com/raheema62038/vi-sales-mnp/releases/latest/download/app-debug.apk'
+                          apkDownloadUrl: 'https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest/download/app-debug.apk'
                         }
                       })
                     }
