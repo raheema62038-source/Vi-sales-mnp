@@ -12,11 +12,11 @@ export const GITHUB_REPO_URL = `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB
  * Default fallback update configuration
  */
 export const DEFAULT_APP_UPDATE_CONFIG: AppUpdateConfig = {
-  latestVersionName: '1.2',
-  latestVersionCode: 3,
+  latestVersionName: '1.3',
+  latestVersionCode: 4,
   apkDownloadUrl: `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest/download/app-release.apk`,
-  updateMessage: 'आपके लिए ऐप का नया version 1.2 उपलब्ध है।',
-  releaseNotes: '• नया ऑटोमैटिक अपडेट सिस्टम\n• बेहतर परफॉरमेंस और स्टेबिलिटी\n• डोरस्टेप एमएक्सपी बुकिंग सुधार',
+  updateMessage: 'आपके लिए ऐप का नया version 1.3 उपलब्ध है।',
+  releaseNotes: '• आधिकारिक Vi Sales MNP v1.3 अपडेट\n• स्वचालित अपडेट डिटेक्शन व डायरेक्ट डाउनलोड\n• परफॉरमेंस व सुरक्षा संवर्द्धन\n• डोरस्टेप सिम डिलीवरी ट्रैकिंग में सुधार',
   forceUpdate: false,
   enabled: true,
   releasedAt: new Date().toISOString()
@@ -173,32 +173,50 @@ export function parseReleaseMetadata(tag: string, body: string, assets: any[]): 
  * Fetch static version.json metadata asset from GitHub repository or public build
  */
 export async function fetchVersionJsonMetadata(timeoutMs = 4000): Promise<AppUpdateConfig | null> {
-  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-
-  const url = `https://raw.githubusercontent.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/main/public/version.json`;
-  try {
-    const res = await fetch(url, { signal: controller ? controller.signal : undefined });
-    if (timeoutId) clearTimeout(timeoutId);
-    if (!res.ok) return null;
-
-    const data = await res.json();
+  const parseData = (data: any): AppUpdateConfig | null => {
     if (!data || !data.versionCode) return null;
-
     return {
-      latestVersionName: String(data.versionName || '1.1'),
-      latestVersionCode: Number(data.versionCode || 2),
+      latestVersionName: String(data.versionName || '1.3'),
+      latestVersionCode: Number(data.versionCode || 4),
       apkDownloadUrl: data.downloadUrl || `https://github.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/releases/latest/download/app-release.apk`,
       releaseNotes: data.releaseNotes || '• सामान्य सुधार एवं नवीन संस्करण',
-      updateMessage: `आपके लिए ऐप का नया version ${data.versionName || '1.1'} उपलब्ध है।`,
+      updateMessage: `आपके लिए ऐप का नया version ${data.versionName || '1.3'} उपलब्ध है।`,
       forceUpdate: Boolean(data.mandatory),
       enabled: true,
       releasedAt: new Date().toISOString()
     };
-  } catch (err: any) {
+  };
+
+  // 1. Try remote GitHub repository raw file
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const rawUrl = `https://raw.githubusercontent.com/${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}/main/public/version.json`;
+
+  try {
+    const res = await fetch(rawUrl, { signal: controller ? controller.signal : undefined });
     if (timeoutId) clearTimeout(timeoutId);
-    return null;
+    if (res.ok) {
+      const data = await res.json();
+      const parsed = parseData(data);
+      if (parsed) return parsed;
+    }
+  } catch (err) {
+    if (timeoutId) clearTimeout(timeoutId);
   }
+
+  // 2. Fallback to local /version.json
+  try {
+    const localRes = await fetch('/version.json');
+    if (localRes.ok) {
+      const data = await localRes.json();
+      const parsed = parseData(data);
+      if (parsed) return parsed;
+    }
+  } catch (err) {
+    // Non-fatal
+  }
+
+  return null;
 }
 
 /**
@@ -260,15 +278,31 @@ export async function performAppUpdateCheck(
 ): Promise<AppUpdateCheckResult> {
   const installed = currentInstalled || (await getCurrentAppVersion());
 
-  // 1. First attempt to query GitHub Releases / version metadata asynchronously
+  // 1. Initial baseline configuration
   let latest = configuredUpdate || DEFAULT_APP_UPDATE_CONFIG;
+
+  // 2. Fetch latest version from GitHub Releases and version.json in parallel
   try {
-    const githubLatest = await fetchLatestFromGitHub();
-    if (githubLatest) {
+    const [githubResult, versionJsonResult] = await Promise.allSettled([
+      fetchLatestFromGitHub(),
+      fetchVersionJsonMetadata()
+    ]);
+
+    const gh = githubResult.status === 'fulfilled' ? githubResult.value : null;
+    const vj = versionJsonResult.status === 'fulfilled' ? versionJsonResult.value : null;
+
+    let bestCandidate: AppUpdateConfig | null = null;
+    if (gh && vj) {
+      bestCandidate = (Number(gh.latestVersionCode) >= Number(vj.latestVersionCode)) ? gh : vj;
+    } else {
+      bestCandidate = gh || vj;
+    }
+
+    if (bestCandidate) {
       latest = {
         ...latest,
-        ...githubLatest,
-        forceUpdate: configuredUpdate?.forceUpdate ?? githubLatest.forceUpdate ?? false,
+        ...bestCandidate,
+        forceUpdate: configuredUpdate?.forceUpdate ?? bestCandidate.forceUpdate ?? false,
         enabled: configuredUpdate?.enabled ?? true
       };
     }

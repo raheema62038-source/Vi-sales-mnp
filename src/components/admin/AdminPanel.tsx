@@ -2183,19 +2183,93 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </form>
 
-            {/* Technical Architecture Info Box */}
-            <div className="bg-slate-900 text-white rounded-3xl p-5 space-y-3 shadow-sm border border-slate-800">
-              <div className="flex items-center gap-2 text-xs font-bold text-red-400 uppercase tracking-wider">
-                <ShieldCheck className="w-4 h-4" />
-                <span>{isHindi ? 'Persistent Keystore & Signed Release APK गाइड' : 'Persistent Keystore & Signed Release Architecture'}</span>
+            {/* Technical Architecture & Automatic APK Generator Box */}
+            <div className="bg-slate-900 text-white rounded-3xl p-6 space-y-5 shadow-lg border border-slate-800">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-xl bg-red-600/20 text-red-400 flex items-center justify-center border border-red-500/30">
+                    <Sparkles className="w-5 h-5 text-red-400 animate-pulse" />
+                  </div>
+                  <div>
+                    <h4 className="font-black text-sm text-white tracking-wide">
+                      {isHindi ? 'ऑटोमैटिक Android APK जनरेटर (GitHub Actions)' : 'Automatic Android APK Generator (GitHub Actions)'}
+                    </h4>
+                    <span className="text-[11px] text-slate-400">
+                      {isHindi ? 'क्लाउड पर 1-क्लिक में साइन्ड APK तैयार करें व ग्राहकों को ऑटो-अपडेट भेजें' : 'Generate signed release APK in cloud and push live updates'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <a
+                    href="https://github.com/raheema62038-source/Vi-sales-mnp/actions/workflows/build-apk.yml"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-700 hover:to-rose-700 text-white rounded-xl text-xs font-black shadow-md shadow-red-600/30 flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>{isHindi ? 'APK बनाएं (Run Workflow)' : 'Build APK (Run Workflow)'}</span>
+                    <ExternalLink className="w-3 h-3 opacity-80" />
+                  </a>
+
+                  <a
+                    href="https://github.com/raheema62038-source/Vi-sales-mnp/releases/latest"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold border border-slate-700 flex items-center gap-1.5 active:scale-95 transition-all"
+                  >
+                    <span>{isHindi ? 'Releases देखें' : 'View Releases'}</span>
+                    <ExternalLink className="w-3 h-3 opacity-80" />
+                  </a>
+                </div>
               </div>
-              <ul className="text-xs text-slate-300 space-y-1.5 list-disc list-inside leading-relaxed">
-                <li><strong>Application ID:</strong> <code>com.vi.salesmnp</code> (पैकेज आईडी वही रखी गई है ताकि ऐप अलग से न बने बल्कि मौजूदा ऐप पर ही अपडेट हो)।</li>
-                <li><strong>Version Code Sequence:</strong> पुराना APK = Code 1 (v1.0), नया APK = Code 2 (v1.1)।</li>
-                <li><strong>Persistent Keystore (Signatures):</strong> एक ही कीस्टोर से साइन होने के कारण भविष्य के सभी APK बिना अनइंस्टॉल किए एक के ऊपर एक अपडेट होंगे।</li>
-                <li><strong>GitHub Secrets:</strong> <code>ANDROID_KEYSTORE_BASE64</code>, <code>ANDROID_KEYSTORE_PASSWORD</code>, <code>ANDROID_KEY_ALIAS</code>, <code>ANDROID_KEY_PASSWORD</code>।</li>
-                <li><strong>Dual Asset Upload:</strong> GitHub Release में <code>app-release.apk</code> और पुराने लिंक्स के लिए <code>app-debug.apk</code> दोनों उपलब्ध रहते हैं।</li>
-              </ul>
+
+              {/* Step-by-Step Instructions */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="bg-slate-800/70 p-3.5 rounded-2xl border border-slate-700/60 space-y-1">
+                  <div className="flex items-center gap-2 text-red-400 font-black text-xs">
+                    <span className="w-5 h-5 rounded-full bg-red-600 text-white text-[10px] flex items-center justify-center font-bold">1</span>
+                    <span>{isHindi ? 'GitHub Actions खोलें' : 'Open Actions'}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {isHindi ? 'ऊपर दिए बटन "APK बनाएं" पर क्लिक करें। GitHub पर "Build Android APK" वर्कफ़्लो खुलेगा।' : 'Click Build APK above to open the automated build workflow.'}
+                  </p>
+                </div>
+
+                <div className="bg-slate-800/70 p-3.5 rounded-2xl border border-slate-700/60 space-y-1">
+                  <div className="flex items-center gap-2 text-amber-400 font-black text-xs">
+                    <span className="w-5 h-5 rounded-full bg-amber-600 text-white text-[10px] flex items-center justify-center font-bold">2</span>
+                    <span>{isHindi ? '"Run workflow" दबाएं' : 'Run Workflow'}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {isHindi ? 'दाईं ओर "Run workflow" बटन दबाकर कन्फर्म करें। GitHub क्लाउड अपने आप साइन्ड APK तैयार करेगा।' : 'Click Run workflow to compile the APK in GitHub cloud runners.'}
+                  </p>
+                </div>
+
+                <div className="bg-slate-800/70 p-3.5 rounded-2xl border border-slate-700/60 space-y-1">
+                  <div className="flex items-center gap-2 text-emerald-400 font-black text-xs">
+                    <span className="w-5 h-5 rounded-full bg-emerald-600 text-white text-[10px] flex items-center justify-center font-bold">3</span>
+                    <span>{isHindi ? 'ग्राहकों को ऑटो-अपडेट' : 'Instant In-App Update'}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    {isHindi ? 'APK बनते ही GitHub Release पर पब्लिश हो जाएगा और सभी ग्राहकों के ऐप में नया अपडेट पॉपअप दिखेगा।' : 'Once built, users automatically receive in-app update popups.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Technical Specifications */}
+              <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-400">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span><strong>Package ID:</strong> <code className="font-mono text-emerald-300">com.vi.salesmnp</code></span>
+                </div>
+                <div>
+                  <span><strong>Target Version:</strong> <code className="font-mono text-amber-300">v{portalConfig.appUpdate?.latestVersionName || DEFAULT_APP_UPDATE_CONFIG.latestVersionName}</code> (Code: {portalConfig.appUpdate?.latestVersionCode || DEFAULT_APP_UPDATE_CONFIG.latestVersionCode})</span>
+                </div>
+                <div>
+                  <span><strong>Signed Release APK:</strong> <code className="font-mono text-slate-300">app-release.apk</code></span>
+                </div>
+              </div>
             </div>
           </div>
         )}
