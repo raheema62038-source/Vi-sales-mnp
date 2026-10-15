@@ -1,1 +1,7 @@
 @import "tailwindcss";
+
+.grecaptcha-badge {
+  opacity: 0.01 !important;
+  pointer-events: none !important;
+}
+

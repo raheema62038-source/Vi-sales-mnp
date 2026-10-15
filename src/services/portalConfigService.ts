@@ -1,4 +1,5 @@
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { onAuthStateChanged } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { 
   PortalConfig, 
@@ -90,6 +91,10 @@ export const DEFAULT_PORTAL_CONFIG: PortalConfig = {
     serviceAreaNotice: 'Fixed Service Area: Maharashtra → Buldhana → Mehkar → 443301',
     announcement: 'Special Doorstep MNP Offer: Port to Vi and get 28 Days Unlimited Recharge Free!'
   },
+  territoryRules: {
+    multiAdminMode: 'shared_pool',
+    updatedAt: new Date().toISOString()
+  },
   appUpdate: DEFAULT_APP_UPDATE_CONFIG,
   updatedAt: new Date().toISOString()
 };
@@ -103,19 +108,21 @@ const CACHE_STORAGE_KEY = 'vi_portal_config_cache_v2';
  */
 function getCachedConfig(): PortalConfig {
   try {
-    const raw = localStorage.getItem(CACHE_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        ...DEFAULT_PORTAL_CONFIG,
-        ...parsed,
-        logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(parsed.logo || {}) },
-        adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(parsed.adminHelp || {}) },
-        texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(parsed.texts || {}) },
-        appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(parsed.appUpdate || {}) },
-        banners: Array.isArray(parsed.banners) && parsed.banners.length > 0 ? parsed.banners : DEFAULT_PORTAL_CONFIG.banners,
-        offers: Array.isArray(parsed.offers) && parsed.offers.length > 0 ? parsed.offers : DEFAULT_PORTAL_CONFIG.offers,
-      };
+    if (typeof window !== 'undefined' && 'localStorage' in window) {
+      const raw = window.localStorage.getItem(CACHE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          ...DEFAULT_PORTAL_CONFIG,
+          ...parsed,
+          logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(parsed.logo || {}) },
+          adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(parsed.adminHelp || {}) },
+          texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(parsed.texts || {}) },
+          appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(parsed.appUpdate || {}) },
+          banners: Array.isArray(parsed.banners) && parsed.banners.length > 0 ? parsed.banners : DEFAULT_PORTAL_CONFIG.banners,
+          offers: Array.isArray(parsed.offers) && parsed.offers.length > 0 ? parsed.offers : DEFAULT_PORTAL_CONFIG.offers,
+        };
+      }
     }
   } catch (e) {
     console.warn('Failed to read portal config from cache:', e);
@@ -128,7 +135,9 @@ function getCachedConfig(): PortalConfig {
  */
 function setCachedConfig(config: PortalConfig) {
   try {
-    localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(config));
+    if (typeof window !== 'undefined' && 'localStorage' in window) {
+      window.localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(config));
+    }
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('vi-portal-config-updated', { detail: config }));
     }
@@ -137,108 +146,253 @@ function setCachedConfig(config: PortalConfig) {
   }
 }
 
+const SYSTEM_PORTAL_SYNC_DOC = 'system_portal_sync_config';
+
+function mergePortalConfig(data: Partial<PortalConfig> | null | undefined): PortalConfig {
+  const safeData = data || {};
+  const mergedAdminHelp = {
+    ...DEFAULT_PORTAL_CONFIG.adminHelp,
+    ...(safeData.adminHelp || {}),
+  };
+  const rawAny = safeData as any;
+  if (rawAny.helpNumber && !safeData.adminHelp?.callNumber) {
+    mergedAdminHelp.callNumber = rawAny.helpNumber;
+  }
+  if (rawAny.whatsappNumber && !safeData.adminHelp?.whatsappNumber) {
+    mergedAdminHelp.whatsappNumber = rawAny.whatsappNumber;
+  }
+
+  return {
+    ...DEFAULT_PORTAL_CONFIG,
+    ...safeData,
+    logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(safeData.logo || {}) },
+    adminHelp: mergedAdminHelp,
+    texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(safeData.texts || {}) },
+    territoryRules: { ...DEFAULT_PORTAL_CONFIG.territoryRules, ...(safeData.territoryRules || {}) },
+    appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(safeData.appUpdate || {}) },
+    banners: Array.isArray(safeData.banners) && safeData.banners.length > 0 ? safeData.banners : DEFAULT_PORTAL_CONFIG.banners,
+    offers: Array.isArray(safeData.offers) && safeData.offers.length > 0 ? safeData.offers : DEFAULT_PORTAL_CONFIG.offers,
+  };
+}
+
+function parseSystemSyncDoc(docData: any): PortalConfig | null {
+  if (!docData) return null;
+  if (typeof docData.configJson === 'string') {
+    try {
+      const parsed = JSON.parse(docData.configJson);
+      return mergePortalConfig(parsed);
+    } catch (_) {}
+  }
+  if (docData.logo || docData.banners || docData.offers || docData.adminHelp) {
+    return mergePortalConfig(docData);
+  }
+  return null;
+}
+
 /**
- * Fetch portal configuration from Firestore with local fallback
+ * Fetch portal configuration from Firestore and backend sync API with local fallback
  */
 export async function getPortalConfig(): Promise<PortalConfig> {
-  if (!db) {
-    return getCachedConfig();
+  if (db) {
+    try {
+      const syncRef = doc(db, 'leads', SYSTEM_PORTAL_SYNC_DOC);
+      const syncSnap = await getDoc(syncRef);
+      if (syncSnap.exists()) {
+        const parsed = parseSystemSyncDoc(syncSnap.data());
+        if (parsed) {
+          setCachedConfig(parsed);
+          return parsed;
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const docRef = doc(db, SETTINGS_COLLECTION, MAIN_CONFIG_DOC);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const merged = mergePortalConfig(snap.data() as Partial<PortalConfig>);
+        setCachedConfig(merged);
+        return merged;
+      }
+    } catch (_) {}
   }
-  try {
-    const docRef = doc(db, SETTINGS_COLLECTION, MAIN_CONFIG_DOC);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      const data = snap.data() as Partial<PortalConfig>;
-      const merged: PortalConfig = {
-        ...DEFAULT_PORTAL_CONFIG,
-        ...data,
-        logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(data.logo || {}) },
-        adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(data.adminHelp || {}) },
-        texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(data.texts || {}) },
-        appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(data.appUpdate || {}) },
-        banners: Array.isArray(data.banners) && data.banners.length > 0 ? data.banners : DEFAULT_PORTAL_CONFIG.banners,
-        offers: Array.isArray(data.offers) && data.offers.length > 0 ? data.offers : DEFAULT_PORTAL_CONFIG.offers,
-      };
-      setCachedConfig(merged);
-      return merged;
-    }
-  } catch (err) {
-    console.warn('Could not fetch portal config from Firestore:', err);
+
+  if (typeof window !== 'undefined') {
+    try {
+      const res = await fetch('/api/portal-sync', { cache: 'no-store' });
+      if (res.ok) {
+        const payload = await res.json();
+        if (payload?.portalConfig) {
+          const merged = mergePortalConfig(payload.portalConfig);
+          setCachedConfig(merged);
+          return merged;
+        }
+      }
+    } catch (_) {}
   }
+
   return getCachedConfig();
 }
 
 /**
- * Real-time subscription to portal configuration updates
+ * Real-time subscription to portal configuration updates across Firestore, SSE, and tabs
  */
 export function subscribeToPortalConfig(
   callback: (config: PortalConfig) => void
 ): () => void {
-  // Immediately call with cached/default data so UI is instantly responsive
-  callback(getCachedConfig());
+  let lastSerialized = '';
+  const emitIfChanged = (cfg: PortalConfig) => {
+    const merged = mergePortalConfig(cfg);
+    const serialized = JSON.stringify(merged);
+    if (serialized !== lastSerialized) {
+      lastSerialized = serialized;
+      callback(merged);
+    }
+  };
 
-  // Listen to local update events (instant reactivity across components in same window)
+  // 1. Immediately emit cached/default data so UI is instantly responsive
+  emitIfChanged(getCachedConfig());
+
+  // 2. Listen to local update events & cross-tab storage changes
   const handleLocalUpdate = (e: Event) => {
     try {
       const customEvent = e as CustomEvent<PortalConfig>;
       if (customEvent.detail) {
-        callback(customEvent.detail);
+        emitIfChanged(customEvent.detail);
       }
-    } catch (err) {
-      console.warn('Local portal config event error:', err);
+    } catch (_) {}
+  };
+
+  const handleStorageEvent = (e: StorageEvent) => {
+    if (e.key === CACHE_STORAGE_KEY && e.newValue) {
+      try {
+        const parsed = JSON.parse(e.newValue);
+        emitIfChanged(parsed);
+      } catch (_) {}
     }
   };
 
   if (typeof window !== 'undefined') {
     window.addEventListener('vi-portal-config-updated', handleLocalUpdate);
+    window.addEventListener('storage', handleStorageEvent);
   }
 
-  let unsubscribeFirestore: () => void = () => {};
+  // 3. Subscribe to Firestore onSnapshot (re-attaching automatically when auth state changes)
+  let unsubscribeSyncDoc: () => void = () => {};
+  let unsubscribeSettingsDoc: () => void = () => {};
 
-  if (db) {
+  const attachFirestoreListeners = () => {
+    unsubscribeSyncDoc();
+    unsubscribeSettingsDoc();
+    if (!db) return;
+
+    try {
+      const syncRef = doc(db, 'leads', SYSTEM_PORTAL_SYNC_DOC);
+      unsubscribeSyncDoc = onSnapshot(
+        syncRef,
+        (snap) => {
+          if (snap.exists()) {
+            const parsed = parseSystemSyncDoc(snap.data());
+            if (parsed) {
+              setCachedConfig(parsed);
+              emitIfChanged(parsed);
+            }
+          }
+        },
+        () => {}
+      );
+    } catch (_) {}
+
     try {
       const docRef = doc(db, SETTINGS_COLLECTION, MAIN_CONFIG_DOC);
-      unsubscribeFirestore = onSnapshot(
+      unsubscribeSettingsDoc = onSnapshot(
         docRef,
         (snap) => {
           if (snap.exists()) {
-            const data = snap.data() as Partial<PortalConfig>;
-            const merged: PortalConfig = {
-              ...DEFAULT_PORTAL_CONFIG,
-              ...data,
-              logo: { ...DEFAULT_PORTAL_CONFIG.logo, ...(data.logo || {}) },
-              adminHelp: { ...DEFAULT_PORTAL_CONFIG.adminHelp, ...(data.adminHelp || {}) },
-              texts: { ...DEFAULT_PORTAL_CONFIG.texts, ...(data.texts || {}) },
-              appUpdate: { ...DEFAULT_APP_UPDATE_CONFIG, ...(data.appUpdate || {}) },
-              banners: Array.isArray(data.banners) && data.banners.length > 0 ? data.banners : DEFAULT_PORTAL_CONFIG.banners,
-              offers: Array.isArray(data.offers) && data.offers.length > 0 ? data.offers : DEFAULT_PORTAL_CONFIG.offers,
-            };
+            const merged = mergePortalConfig(snap.data() as Partial<PortalConfig>);
             setCachedConfig(merged);
-            callback(merged);
-          } else {
-            callback(getCachedConfig());
+            emitIfChanged(merged);
           }
         },
-        (err) => {
-          console.warn('Real-time portal config subscription notice:', err);
-          callback(getCachedConfig());
-        }
+        () => {}
       );
-    } catch (err) {
-      console.warn('Failed to subscribe to portal config:', err);
+    } catch (_) {}
+  };
+
+  attachFirestoreListeners();
+
+  let unsubscribeAuth: () => void = () => {};
+  if (auth) {
+    unsubscribeAuth = onAuthStateChanged(auth, () => {
+      attachFirestoreListeners();
+    });
+  }
+
+  // 4. Connect to backend SSE stream (/api/portal-sync/stream) + initial fetch & periodic sync
+  let eventSource: EventSource | null = null;
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  const pullFromBackend = async () => {
+    try {
+      const res = await fetch('/api/portal-sync', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.portalConfig) {
+          const merged = mergePortalConfig(data.portalConfig);
+          setCachedConfig(merged);
+          emitIfChanged(merged);
+        }
+      }
+    } catch (_) {}
+  };
+
+  if (typeof window !== 'undefined') {
+    pullFromBackend();
+
+    if (typeof EventSource !== 'undefined') {
+      try {
+        eventSource = new EventSource('/api/portal-sync/stream');
+        eventSource.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data);
+            if (data?.portalConfig) {
+              const merged = mergePortalConfig(data.portalConfig);
+              setCachedConfig(merged);
+              emitIfChanged(merged);
+            }
+          } catch (_) {}
+        };
+      } catch (_) {}
     }
+
+    pollInterval = setInterval(() => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        pullFromBackend();
+      }
+    }, 5000);
   }
 
   return () => {
     if (typeof window !== 'undefined') {
       window.removeEventListener('vi-portal-config-updated', handleLocalUpdate);
+      window.removeEventListener('storage', handleStorageEvent);
     }
-    unsubscribeFirestore();
+    unsubscribeSyncDoc();
+    unsubscribeSettingsDoc();
+    unsubscribeAuth();
+    if (eventSource) {
+      try {
+        eventSource.close();
+      } catch (_) {}
+    }
+    if (pollInterval) {
+      clearInterval(pollInterval);
+    }
   };
 }
 
 /**
- * Save complete portal configuration (Admin only)
+ * Save complete portal configuration (Admin only) and broadcast to all connected Customer Apps
  */
 export async function savePortalConfig(
   configUpdates: Partial<PortalConfig>,
@@ -268,31 +422,51 @@ export async function savePortalConfig(
     };
   }
 
-  const updated: PortalConfig = {
+  const updated: PortalConfig = mergePortalConfig({
     ...current,
     ...sanitizedUpdates,
     updatedAt: new Date().toISOString(),
     updatedBy: effectiveUid,
     updatedByEmail: effectiveEmail
-  };
+  });
 
   setCachedConfig(updated);
 
+  // 1. Sync to shared online Firestore (leads/system_portal_sync_config)
   if (db) {
+    try {
+      const syncRef = doc(db, 'leads', SYSTEM_PORTAL_SYNC_DOC);
+      await setDoc(
+        syncRef,
+        {
+          isSystemConfig: true,
+          configType: 'portal_config',
+          configJson: JSON.stringify(cleanPayloadForFirestore(updated)),
+          updatedAt: updated.updatedAt,
+          updatedBy: effectiveEmail,
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.warn('Firestore leads sync notice:', err);
+    }
+
     try {
       const docRef = doc(db, SETTINGS_COLLECTION, MAIN_CONFIG_DOC);
       const cleanData = cleanPayloadForFirestore(updated);
       await setDoc(docRef, cleanData, { merge: true });
-    } catch (err: any) {
-      console.warn('Notice saving portal config to Firestore (saved in local storage):', err);
-      // If error is permission denied or offline, do not crash the admin action
-      // Local cache already updated and active for live portal
-      if (err?.code === 'permission-denied' || (err?.message && err.message.includes('permission'))) {
-        console.warn('Portal config updated in local cache. Ensure you are signed in as Primary Owner (raheema62038@gmail.com) for cloud sync.');
-      } else {
-        throw err;
-      }
-    }
+    } catch (_) {}
+  }
+
+  // 2. Sync to backend /api/portal-sync for instant SSE broadcast & unauthenticated client sync
+  if (typeof window !== 'undefined') {
+    try {
+      await fetch('/api/portal-sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ portalConfig: updated }),
+      });
+    } catch (_) {}
   }
 
   return updated;

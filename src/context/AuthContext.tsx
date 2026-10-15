@@ -202,7 +202,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!isCancelled) {
         setLoading(false);
       }
-    }, 5000);
+    }, 1500);
 
     const unsubscribe = onAuthStateChanged(
       auth,
@@ -508,7 +508,53 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('Profile read notice:', profileErr);
       }
 
-      // Handle Admin login strictly (Email & Password ONLY - No Passkey/Security Key)
+      // 1. Handle Owner Login Strictly: ONLY authorized Primary Owner (raheema62038@gmail.com)
+      if (requestedRole === 'owner') {
+        if (!isPrimaryOwner) {
+          if (auth) await signOut(auth).catch(() => {});
+          setUser(null);
+          setUserProfile(null);
+          setRole('customer');
+          const deniedOwnerMsg = `सुरक्षा प्रतिबंध: केवल अधिकृत Primary Owner (${PRIMARY_OWNER_EMAIL}) ही Owner Login का उपयोग कर सकते हैं। अन्य एडमिन्स कृपया "Admin Login" विकल्प का उपयोग करें।`;
+          setError(deniedOwnerMsg);
+          throw new Error(deniedOwnerMsg);
+        }
+
+        const ownerProf: UserProfile = {
+          uid,
+          customerUid: uid,
+          email: cleanEmail,
+          displayName: existingProfile?.displayName || userObj.displayName || 'Primary Owner Admin (Master)',
+          role: 'owner',
+          status: 'approved',
+          isPrimaryOwner: true,
+          isOwner: true,
+          isDeactivated: false,
+          createdAt: existingProfile?.createdAt || new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+          hasLoggedIn: true,
+          loginCount: (existingProfile?.loginCount || 1) + 1,
+          assignedCircle: 'National HQ (Owner)',
+          assignedState: 'All States (National)',
+          assignedDistrict: 'All Districts',
+          assignedTaluka: 'All Talukas',
+          assignedVillage: 'All Villages',
+        };
+        try {
+          await saveUserProfile(ownerProf);
+        } catch (e) {
+          console.warn('Owner profile save notice:', e);
+        }
+        existingProfile = ownerProf;
+
+        setUser(userObj);
+        setRole('owner');
+        setUserProfile(existingProfile);
+        setLoading(false);
+        return;
+      }
+
+      // 2. Handle Admin login strictly (Email & Password ONLY - Owner Authorized Admins)
       if (requestedRole === 'admin') {
         const isDeactivatedAccount = !isPrimaryOwner && (
           existingProfile?.isDeactivated === true ||

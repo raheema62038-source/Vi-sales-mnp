@@ -22,13 +22,19 @@
         "createdByOwnerUid": { "type": "string" },
         "createdAt": { "type": "string" },
         "lastLoginAt": { "type": "string" },
-        "assignedCircle": { "type": "string" }
+        "assignedCircle": { "type": "string" },
+        "assignedState": { "type": "string" },
+        "assignedDistrict": { "type": "string" },
+        "assignedTaluka": { "type": "string" },
+        "assignedVillage": { "type": "string" },
+        "assignedVillages": { "type": "array" },
+        "assignedTerritories": { "type": "array" }
       },
       "required": ["uid", "displayName", "role"]
     },
     "Lead": {
       "title": "Lead",
-      "description": "Vi MNP Sales Lead and Customer Porting Request strictly isolated by customerUid for customers, with full Owner and Admin access.",
+      "description": "Vi MNP Sales Lead and Customer Porting Request strictly isolated by customerUid for customers, with village-wise and city-wise admin assignment and access scoping.",
       "type": "object",
       "properties": {
         "customerUid": { "type": "string" },
@@ -44,6 +50,14 @@
         "simType": { "type": "string" },
         "upcCode": { "type": "string" },
         "upcExpiryDate": { "type": "string" },
+        "state": { "type": "string" },
+        "district": { "type": "string" },
+        "taluka": { "type": "string" },
+        "village": { "type": "string" },
+        "assignedAdminUids": { "type": "array" },
+        "assignedAdminNames": { "type": "array" },
+        "assignedTo": { "type": "string" },
+        "assignedAt": { "type": "string" },
         "address": { "type": "string" },
         "cityCircle": { "type": "string" },
         "pincode": { "type": "string" },

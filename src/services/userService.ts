@@ -3,6 +3,7 @@ import {
   getDoc, 
   setDoc, 
   updateDoc, 
+  deleteDoc,
   collection, 
   getDocs, 
   onSnapshot,
@@ -14,7 +15,8 @@ import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut as secondarySignOut } from 'firebase/auth';
 import { db, DEFAULT_FIREBASE_CONFIG, getActiveFirebaseConfig, normalizeFirebaseConfig } from '../firebase';
 import { formatAuthError } from './firebaseAuthService';
-import { UserProfile, UserRole, AdminApprovalStatus } from '../types';
+import { UserProfile, UserRole, AdminApprovalStatus, AdminTerritoryAssignment } from '../types';
+export { assignTerritoryToAdmin, removeTerritoryFromAdmin, matchAdminsForTerritory, isLeadAccessibleByAdmin } from './territoryService';
 
 export const PRIMARY_OWNER_EMAIL = 'raheema62038@gmail.com';
 
@@ -88,6 +90,92 @@ export function parseAdminStatus(val: any, role?: UserRole, isDeactivated?: bool
 }
 
 /**
+ * Universal parser to convert Firestore user document data into a strongly-typed UserProfile
+ * with complete support for village-wise and city-wise territory assignments.
+ */
+export function parseUserDataToProfile(
+  data: any,
+  docId: string,
+  emailHint?: string,
+  phoneHint?: string
+): UserProfile {
+  if (!data) data = {};
+  const userEmail = data.email || emailHint || '';
+  const isOwner = Boolean(
+    isEmailPrimaryOwner(userEmail) ||
+    (emailHint && isEmailPrimaryOwner(emailHint)) ||
+    data.isPrimaryOwner ||
+    data.isOwner ||
+    data.role === 'owner'
+  );
+  const role: UserRole = isOwner ? 'owner' : parseUserRole(data.role || data.userRole, userEmail);
+  const isDeactivated = Boolean(
+    !isOwner &&
+    (data.isDeactivated === true ||
+      data.status === 'deactivated' ||
+      data.status === 'deleted' ||
+      data.adminAccessRevoked === true)
+  );
+  const status = parseAdminStatus(data.status, role, isDeactivated);
+
+  const assignedTerritories: AdminTerritoryAssignment[] = Array.isArray(data.assignedTerritories)
+    ? data.assignedTerritories
+    : [];
+
+  const assignedVillages: string[] = Array.isArray(data.assignedVillages)
+    ? data.assignedVillages
+    : (data.assignedVillage ? [data.assignedVillage] : []);
+
+  return {
+    uid: data.uid || docId,
+    customerUid: data.customerUid || data.uid || docId,
+    email: userEmail,
+    displayName: data.displayName || data.name || (isOwner ? 'Primary Owner Admin' : 'User'),
+    role,
+    status,
+    phone: data.phone || data.phoneNumber || phoneHint || '',
+    phoneNumber: data.phoneNumber || data.phone || phoneHint || '',
+    isPrimaryOwner: isOwner,
+    isOwner,
+    isDeactivated,
+    adminAccessRevoked: Boolean(data.adminAccessRevoked || isDeactivated),
+    previousRole: data.previousRole,
+    requestedAt: data.requestedAt,
+    requestNote: data.requestNote,
+    approvedAt: data.approvedAt,
+    approvedBy: data.approvedBy,
+    rejectedAt: data.rejectedAt,
+    deactivatedAt: data.deactivatedAt,
+    deactivatedBy: data.deactivatedBy,
+    deletedAt: data.deletedAt,
+    deletedBy: data.deletedBy,
+    deletionReason: data.deletionReason,
+    createdByOwnerUid: data.createdByOwnerUid,
+    createdAt: data.createdAt || new Date().toISOString(),
+    lastLoginAt: data.lastLoginAt || new Date().toISOString(),
+    assignedCircle: data.assignedCircle || (isOwner || role === 'admin' ? 'National HQ' : 'Vi Circle'),
+    hasLoggedIn: Boolean(data.hasLoggedIn || data.lastLoginAt),
+    loginCount: data.loginCount !== undefined ? Number(data.loginCount) : (data.lastLoginAt ? 1 : 0),
+    downloadCount: Number(data.downloadCount || 0),
+    lastDownloadedAt: data.lastDownloadedAt || '',
+    hasDownloaded: Boolean(data.hasDownloaded || (data.downloadCount && Number(data.downloadCount) > 0)),
+    address: data.address || '',
+    taluka: data.taluka || '',
+    district: data.district || '',
+    state: data.state || '',
+    pincode: data.pincode || '',
+
+    // Village-wise & City-wise Territory Assignment fields
+    assignedState: data.assignedState || '',
+    assignedDistrict: data.assignedDistrict || '',
+    assignedTaluka: data.assignedTaluka || '',
+    assignedVillage: data.assignedVillage || '',
+    assignedVillages,
+    assignedTerritories,
+  };
+}
+
+/**
  * Fetch a single user profile by UID from Firestore.
  */
 export async function getUserProfile(uid: string, emailHint?: string, phoneHint?: string): Promise<UserProfile | null> {
@@ -98,48 +186,7 @@ export async function getUserProfile(uid: string, emailHint?: string, phoneHint?
     const snap = await withTimeout(getDoc(userRef), TIMEOUT_MS, null);
 
     if (snap && snap.exists()) {
-      const data = snap.data();
-      const userEmail = data.email || emailHint || '';
-      const isOwner = Boolean(isOwnerByEmail || isEmailPrimaryOwner(userEmail) || data.isPrimaryOwner || data.role === 'owner');
-      
-      let role: UserRole = isOwner ? 'owner' : parseUserRole(data.role || data.userRole, userEmail);
-      const isDeactivated = Boolean(!isOwner && (data.isDeactivated === true || data.status === 'deactivated' || data.status === 'deleted' || data.adminAccessRevoked === true));
-      const status = parseAdminStatus(data.status, role, isDeactivated);
-
-      return {
-        uid: data.uid || uid,
-        customerUid: data.customerUid || data.uid || uid,
-        email: userEmail,
-        displayName: data.displayName || data.name || (isOwner ? 'Primary Owner Admin' : 'User'),
-        role,
-        status,
-        phone: data.phone || data.phoneNumber || phoneHint || '',
-        phoneNumber: data.phoneNumber || data.phone || phoneHint || '',
-        isPrimaryOwner: isOwner,
-        isOwner,
-        isDeactivated,
-        adminAccessRevoked: Boolean(data.adminAccessRevoked || isDeactivated),
-        previousRole: data.previousRole,
-        requestedAt: data.requestedAt,
-        requestNote: data.requestNote,
-        approvedAt: data.approvedAt,
-        approvedBy: data.approvedBy,
-        rejectedAt: data.rejectedAt,
-        deactivatedAt: data.deactivatedAt,
-        deactivatedBy: data.deactivatedBy,
-        deletedAt: data.deletedAt,
-        deletedBy: data.deletedBy,
-        deletionReason: data.deletionReason,
-        createdByOwnerUid: data.createdByOwnerUid,
-        createdAt: data.createdAt || new Date().toISOString(),
-        lastLoginAt: data.lastLoginAt || new Date().toISOString(),
-        assignedCircle: data.assignedCircle || (isOwner || role === 'admin' ? 'National HQ' : 'Vi Circle'),
-        hasLoggedIn: Boolean(data.hasLoggedIn || data.lastLoginAt),
-        loginCount: data.loginCount !== undefined ? Number(data.loginCount) : (data.lastLoginAt ? 1 : 0),
-        downloadCount: Number(data.downloadCount || 0),
-        lastDownloadedAt: data.lastDownloadedAt || '',
-        hasDownloaded: Boolean(data.hasDownloaded || (data.downloadCount && Number(data.downloadCount) > 0)),
-      };
+      return parseUserDataToProfile(snap.data(), uid, emailHint, phoneHint);
     } else if (isOwnerByEmail) {
       // Primary owner's first access before document creation
       const now = new Date().toISOString();
@@ -157,6 +204,10 @@ export async function getUserProfile(uid: string, emailHint?: string, phoneHint?
         createdAt: now,
         lastLoginAt: now,
         assignedCircle: 'National HQ (Owner)',
+        assignedState: 'All States (National)',
+        assignedDistrict: 'All Districts',
+        assignedTaluka: 'All Talukas',
+        assignedVillage: 'All Villages',
       };
       try {
         await setDoc(userRef, ownerProfile, { merge: true });
@@ -176,26 +227,7 @@ export async function getUserProfile(uid: string, emailHint?: string, phoneHint?
         );
         if (qSnap && !qSnap.empty) {
           const docFound = qSnap.docs[0];
-          const data = docFound.data();
-          const role = parseUserRole(data.role || data.userRole, cleanEmail);
-          const isDeactivated = Boolean(data.isDeactivated === true || data.status === 'deactivated' || data.status === 'deleted' || data.adminAccessRevoked === true);
-          const status = parseAdminStatus(data.status, role, isDeactivated);
-          const preservedProfile: UserProfile = {
-            uid,
-            customerUid: uid,
-            email: cleanEmail,
-            displayName: data.displayName || data.name || 'Customer',
-            role,
-            status,
-            phone: data.phone || data.phoneNumber || phoneHint || '',
-            phoneNumber: data.phoneNumber || data.phone || phoneHint || '',
-            isPrimaryOwner: false,
-            isOwner: false,
-            isDeactivated,
-            createdAt: data.createdAt || new Date().toISOString(),
-            lastLoginAt: new Date().toISOString(),
-            assignedCircle: data.assignedCircle || 'Vi Circle',
-          };
+          const preservedProfile = parseUserDataToProfile(docFound.data(), uid, cleanEmail, phoneHint);
           await setDoc(userRef, preservedProfile, { merge: true }).catch(() => {});
           return preservedProfile;
         }
@@ -224,46 +256,7 @@ export function subscribeToUserProfile(
       userRef,
       (snap) => {
         if (snap.exists()) {
-          const data = snap.data();
-          const userEmail = data.email || '';
-          const isOwner = Boolean(isEmailPrimaryOwner(userEmail) || data.isPrimaryOwner || data.role === 'owner');
-          let role: UserRole = isOwner ? 'owner' : parseUserRole(data.role || data.userRole, userEmail);
-          const isDeactivated = Boolean(!isOwner && (data.isDeactivated === true || data.status === 'deactivated' || data.status === 'deleted' || data.adminAccessRevoked === true));
-          const status = parseAdminStatus(data.status, role, isDeactivated);
-
-          onProfile({
-            uid: data.uid || uid,
-            email: userEmail,
-            displayName: data.displayName || data.name || (isOwner ? 'Primary Owner Admin' : 'User'),
-            role,
-            status,
-            phone: data.phone || data.phoneNumber || '',
-            phoneNumber: data.phoneNumber || data.phone || '',
-            isPrimaryOwner: isOwner,
-            isOwner,
-            isDeactivated,
-            adminAccessRevoked: Boolean(data.adminAccessRevoked || isDeactivated),
-            previousRole: data.previousRole,
-            requestedAt: data.requestedAt,
-            requestNote: data.requestNote,
-            approvedAt: data.approvedAt,
-            approvedBy: data.approvedBy,
-            rejectedAt: data.rejectedAt,
-            deactivatedAt: data.deactivatedAt,
-            deactivatedBy: data.deactivatedBy,
-            deletedAt: data.deletedAt,
-            deletedBy: data.deletedBy,
-            deletionReason: data.deletionReason,
-            createdByOwnerUid: data.createdByOwnerUid,
-            createdAt: data.createdAt || new Date().toISOString(),
-            lastLoginAt: data.lastLoginAt || new Date().toISOString(),
-            assignedCircle: data.assignedCircle || (isOwner || role === 'admin' ? 'National HQ' : 'Vi Circle'),
-            hasLoggedIn: Boolean(data.hasLoggedIn || data.lastLoginAt),
-            loginCount: data.loginCount !== undefined ? Number(data.loginCount) : (data.lastLoginAt ? 1 : 0),
-            downloadCount: Number(data.downloadCount || 0),
-            lastDownloadedAt: data.lastDownloadedAt || '',
-            hasDownloaded: Boolean(data.hasDownloaded || (data.downloadCount && Number(data.downloadCount) > 0)),
-          });
+          onProfile(parseUserDataToProfile(snap.data(), uid));
         }
       },
       (err) => {
@@ -318,13 +311,21 @@ export async function createAdminUserByOwner(
     displayName: string;
     phone?: string;
     assignedCircle?: string;
+    assignedState?: string;
+    assignedDistrict?: string;
+    assignedTaluka?: string;
+    assignedVillage?: string;
   }
 ): Promise<UserProfile> {
   const cleanEmail = adminData.email.trim().toLowerCase();
   const cleanPassword = adminData.password.trim();
   const cleanName = adminData.displayName.trim();
   const cleanPhone = adminData.phone?.trim() || '';
-  const cleanCircle = adminData.assignedCircle?.trim() || 'Vi Circle HQ';
+  const cleanState = adminData.assignedState?.trim() || 'Maharashtra';
+  const cleanDistrict = adminData.assignedDistrict?.trim() || 'Buldhana';
+  const cleanTaluka = adminData.assignedTaluka?.trim() || 'Mehkar';
+  const cleanVillage = adminData.assignedVillage?.trim() || '';
+  const cleanCircle = adminData.assignedCircle?.trim() || (cleanVillage ? `${cleanVillage}, ${cleanTaluka}` : 'Vi Circle HQ');
 
   if (!cleanEmail || !cleanPassword || !cleanName) {
     throw new Error('कृपया ईमेल, पासवर्ड और नाम सभी आवश्यक फ़ील्ड भरें।');
@@ -431,6 +432,20 @@ export async function createAdminUserByOwner(
   }
 
   const now = new Date().toISOString();
+  const initialTerritories: AdminTerritoryAssignment[] = cleanVillage
+    ? [
+        {
+          id: `terr_${Date.now()}`,
+          state: cleanState,
+          district: cleanDistrict,
+          taluka: cleanTaluka,
+          village: cleanVillage,
+          assignedAt: now,
+          assignedBy: ownerUser.email || ownerUser.uid,
+        },
+      ]
+    : [];
+
   const newAdminProfile: UserProfile = {
     uid: newUid,
     email: cleanEmail,
@@ -443,6 +458,12 @@ export async function createAdminUserByOwner(
     isPrimaryOwner: false,
     isOwner: false,
     assignedCircle: cleanCircle,
+    assignedState: cleanState,
+    assignedDistrict: cleanDistrict,
+    assignedTaluka: cleanTaluka,
+    assignedVillage: cleanVillage,
+    assignedVillages: cleanVillage ? [cleanVillage] : [],
+    assignedTerritories: initialTerritories,
     createdByOwnerUid: ownerUser.uid,
     approvedBy: ownerUser.uid,
     approvedAt: now,
@@ -545,6 +566,53 @@ export async function removeAdminUser(
 }
 
 /**
+ * Primary Owner: Completely delete a Customer ID / Account from Firestore
+ * - Ensures Owner has full authority to remove customer IDs
+ * - Safety check strictly prevents deleting Primary Owner account
+ */
+export async function deleteCustomerUser(targetUid: string, ownerEmail?: string): Promise<void> {
+  if (!db) throw new Error('Firestore initialized नहीं है');
+  if (!targetUid) throw new Error('Customer ID is required');
+
+  const userRef = doc(db, 'users', targetUid);
+  const snap = await getDoc(userRef).catch(() => null);
+  if (snap && snap.exists()) {
+    const data = snap.data();
+    if (isEmailPrimaryOwner(data.email) || data.isPrimaryOwner || data.role === 'owner') {
+      throw new Error('सुरक्षा नियम: Primary Owner account को डिलीट नहीं किया जा सकता।');
+    }
+  }
+
+  await withTimeout(deleteDoc(userRef), TIMEOUT_MS, undefined);
+}
+
+/**
+ * Record Customer / User login in Firestore:
+ * Updates hasLoggedIn: true, lastLoginAt, increments loginCount
+ */
+export async function recordUserLogin(uid: string, loginMethod: string = 'app_login'): Promise<void> {
+  if (!db || !uid) return;
+  try {
+    const userRef = doc(db, 'users', uid);
+    const snap = await getDoc(userRef).catch(() => null);
+    const now = new Date().toISOString();
+    const currentCount = snap && snap.exists() ? Number(snap.data()?.loginCount || 0) : 0;
+    await setDoc(
+      userRef,
+      {
+        hasLoggedIn: true,
+        lastLoginAt: now,
+        loginCount: currentCount + 1,
+        lastLoginMethod: loginMethod,
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('recordUserLogin notice:', err);
+  }
+}
+
+/**
  * Fetch all users for Admin/Owner management directory
  */
 export async function getAllUsers(): Promise<UserProfile[]> {
@@ -555,47 +623,7 @@ export async function getAllUsers(): Promise<UserProfile[]> {
       if (snap && !snap.empty) {
         const firestoreUsers: UserProfile[] = [];
         snap.forEach((d) => {
-          const data = d.data();
-          const userEmail = data.email || '';
-          const isOwner = Boolean(isEmailPrimaryOwner(userEmail) || data.isPrimaryOwner || data.role === 'owner');
-          const role: UserRole = isOwner ? 'owner' : parseUserRole(data.role || data.userRole, userEmail);
-          const isDeactivated = Boolean(!isOwner && (data.isDeactivated === true || data.status === 'deactivated' || data.status === 'deleted' || data.adminAccessRevoked === true));
-          const status = parseAdminStatus(data.status, role, isDeactivated);
-
-          firestoreUsers.push({
-            uid: data.uid || d.id,
-            customerUid: data.customerUid || data.uid || d.id,
-            email: userEmail,
-            displayName: data.displayName || data.name || (isOwner ? 'Primary Owner Admin' : 'User'),
-            role,
-            status,
-            phone: data.phone || data.phoneNumber || '',
-            phoneNumber: data.phoneNumber || data.phone || '',
-            isPrimaryOwner: isOwner,
-            isOwner,
-            isDeactivated,
-            adminAccessRevoked: Boolean(data.adminAccessRevoked || isDeactivated),
-            previousRole: data.previousRole,
-            requestedAt: data.requestedAt,
-            requestNote: data.requestNote,
-            approvedAt: data.approvedAt,
-            approvedBy: data.approvedBy,
-            rejectedAt: data.rejectedAt,
-            deactivatedAt: data.deactivatedAt,
-            deactivatedBy: data.deactivatedBy,
-            deletedAt: data.deletedAt,
-            deletedBy: data.deletedBy,
-            deletionReason: data.deletionReason,
-            createdByOwnerUid: data.createdByOwnerUid,
-            createdAt: data.createdAt || '',
-            lastLoginAt: data.lastLoginAt || '',
-            assignedCircle: data.assignedCircle || (isOwner || role === 'admin' ? 'National HQ' : 'Vi Circle'),
-            hasLoggedIn: Boolean(data.hasLoggedIn || data.lastLoginAt),
-            loginCount: data.loginCount !== undefined ? Number(data.loginCount) : (data.lastLoginAt ? 1 : 0),
-            downloadCount: Number(data.downloadCount || 0),
-            lastDownloadedAt: data.lastDownloadedAt || '',
-            hasDownloaded: Boolean(data.hasDownloaded || (data.downloadCount && Number(data.downloadCount) > 0)),
-          });
+          firestoreUsers.push(parseUserDataToProfile(d.data(), d.id));
         });
         return firestoreUsers;
       }
@@ -622,47 +650,7 @@ export function subscribeToAllUsers(
       (snapshot) => {
         const list: UserProfile[] = [];
         snapshot.forEach((d) => {
-          const data = d.data();
-          const userEmail = data.email || '';
-          const isOwner = Boolean(isEmailPrimaryOwner(userEmail) || data.isPrimaryOwner || data.role === 'owner');
-          const role: UserRole = isOwner ? 'owner' : parseUserRole(data.role || data.userRole, userEmail);
-          const isDeactivated = Boolean(!isOwner && (data.isDeactivated === true || data.status === 'deactivated' || data.status === 'deleted' || data.adminAccessRevoked === true));
-          const status = parseAdminStatus(data.status, role, isDeactivated);
-
-          list.push({
-            uid: data.uid || d.id,
-            customerUid: data.customerUid || data.uid || d.id,
-            email: userEmail,
-            displayName: data.displayName || data.name || (isOwner ? 'Primary Owner Admin' : 'User'),
-            role,
-            status,
-            phone: data.phone || data.phoneNumber || '',
-            phoneNumber: data.phoneNumber || data.phone || '',
-            isPrimaryOwner: isOwner,
-            isOwner,
-            isDeactivated,
-            adminAccessRevoked: Boolean(data.adminAccessRevoked || isDeactivated),
-            previousRole: data.previousRole,
-            requestedAt: data.requestedAt,
-            requestNote: data.requestNote,
-            approvedAt: data.approvedAt,
-            approvedBy: data.approvedBy,
-            rejectedAt: data.rejectedAt,
-            deactivatedAt: data.deactivatedAt,
-            deactivatedBy: data.deactivatedBy,
-            deletedAt: data.deletedAt,
-            deletedBy: data.deletedBy,
-            deletionReason: data.deletionReason,
-            createdByOwnerUid: data.createdByOwnerUid,
-            createdAt: data.createdAt || '',
-            lastLoginAt: data.lastLoginAt || '',
-            assignedCircle: data.assignedCircle || (isOwner || role === 'admin' ? 'National HQ' : 'Vi Circle'),
-            hasLoggedIn: Boolean(data.hasLoggedIn || data.lastLoginAt),
-            loginCount: data.loginCount !== undefined ? Number(data.loginCount) : (data.lastLoginAt ? 1 : 0),
-            downloadCount: Number(data.downloadCount || 0),
-            lastDownloadedAt: data.lastDownloadedAt || '',
-            hasDownloaded: Boolean(data.hasDownloaded || (data.downloadCount && Number(data.downloadCount) > 0)),
-          });
+          list.push(parseUserDataToProfile(d.data(), d.id));
         });
         onUsers(list);
       },

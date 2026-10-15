@@ -17,6 +17,12 @@ import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { createAdminUserByOwner } from '../services/userService';
 import { UserProfile } from '../types';
+import {
+  getAvailableStates,
+  getAvailableDistricts,
+  getAvailableTalukas,
+  getAvailableVillages,
+} from '../services/territoryService';
 
 interface AddAdminModalProps {
   isOpen: boolean;
@@ -62,6 +68,48 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Territory Selection State
+  const [assignedState, setAssignedState] = useState('Maharashtra');
+  const [assignedDistrict, setAssignedDistrict] = useState('Buldhana');
+  const [assignedTaluka, setAssignedTaluka] = useState('Mehkar');
+  const [assignedVillage, setAssignedVillage] = useState('Mehkar City');
+  const [customVillage, setCustomVillage] = useState('');
+
+  const availableStates = getAvailableStates();
+  const availableDistricts = getAvailableDistricts(assignedState);
+  const availableTalukas = getAvailableTalukas(assignedState, assignedDistrict);
+  const availableVillages = getAvailableVillages(assignedState, assignedDistrict, assignedTaluka);
+
+  const handleStateChange = (st: string) => {
+    setAssignedState(st);
+    const dList = getAvailableDistricts(st);
+    const d = dList[0] || '';
+    setAssignedDistrict(d);
+    const tList = getAvailableTalukas(st, d);
+    const t = tList[0] || '';
+    setAssignedTaluka(t);
+    const vList = getAvailableVillages(st, d, t);
+    setAssignedVillage(vList[0] || '');
+    setCustomVillage('');
+  };
+
+  const handleDistrictChange = (d: string) => {
+    setAssignedDistrict(d);
+    const tList = getAvailableTalukas(assignedState, d);
+    const t = tList[0] || '';
+    setAssignedTaluka(t);
+    const vList = getAvailableVillages(assignedState, d, t);
+    setAssignedVillage(vList[0] || '');
+    setCustomVillage('');
+  };
+
+  const handleTalukaChange = (t: string) => {
+    setAssignedTaluka(t);
+    const vList = getAvailableVillages(assignedState, assignedDistrict, t);
+    setAssignedVillage(vList[0] || '');
+    setCustomVillage('');
+  };
+
   if (!isOpen) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -74,19 +122,28 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
     }
 
     const cleanName = name.trim();
-    const cleanEmail = email.trim().toLowerCase();
+    const rawId = email.trim().toLowerCase();
     const cleanPassword = password.trim();
+    const finalVillage = assignedVillage === 'OTHER' ? customVillage.trim() : assignedVillage;
 
     if (!cleanName) {
       setError('कृपया Admin का नाम दर्ज करें।');
       return;
     }
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setError('कृपया वैध ईमेल पता दर्ज करें।');
+    if (!rawId) {
+      setError('कृपया Admin की लॉगिन ID या ईमेल पता दर्ज करें।');
       return;
     }
+    const cleanEmail = rawId.includes('@')
+      ? rawId
+      : `${rawId.replace(/[^a-z0-9._-]/g, '')}@visales.local`;
+
     if (cleanPassword.length < 6) {
       setError('पासवर्ड कम से कम 6 अक्षरों का होना चाहिए।');
+      return;
+    }
+    if (!finalVillage) {
+      setError('कृपया Admin के लिए गाँव (Village) निर्धारित करें।');
       return;
     }
 
@@ -100,6 +157,10 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
           password: cleanPassword,
           phone: phone.trim(),
           assignedCircle: circle,
+          assignedState,
+          assignedDistrict,
+          assignedTaluka,
+          assignedVillage: finalVillage,
         }
       );
 
@@ -109,6 +170,8 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
       setPassword('');
       setPhone('');
       setCircle('National HQ');
+      setAssignedVillage('Mehkar City');
+      setCustomVillage('');
       onAdminCreated(newAdmin);
       onClose();
     } catch (err: any) {
@@ -250,10 +313,86 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
             </div>
           </div>
 
+          {/* Territory Assignment (State, District, Taluka, Village) */}
+          <div className="bg-slate-50 p-3 rounded-2xl border border-slate-200 space-y-2">
+            <label className="block text-xs font-black text-slate-800 flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-red-600" />
+              <span>{language === 'hi' ? 'क्षेत्र असाइनमेंट (State, District, Taluka, Village)' : 'Territory Assignment'}</span>
+            </label>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold block mb-0.5">राज्य (State)</span>
+                <select
+                  value={assignedState}
+                  onChange={(e) => handleStateChange(e.target.value)}
+                  className="w-full px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-medium"
+                >
+                  {availableStates.map((st) => (
+                    <option key={st} value={st}>{st}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold block mb-0.5">ज़िला (District)</span>
+                <select
+                  value={assignedDistrict}
+                  onChange={(e) => handleDistrictChange(e.target.value)}
+                  className="w-full px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-medium"
+                >
+                  {availableDistricts.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold block mb-0.5">तहसील (Taluka/City)</span>
+                <select
+                  value={assignedTaluka}
+                  onChange={(e) => handleTalukaChange(e.target.value)}
+                  className="w-full px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-medium"
+                >
+                  {availableTalukas.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <span className="text-[10px] text-slate-500 font-bold block mb-0.5">गाँव (Village/Area)</span>
+                <select
+                  value={assignedVillage}
+                  onChange={(e) => setAssignedVillage(e.target.value)}
+                  className="w-full px-2 py-1.5 text-xs bg-white border border-slate-300 rounded-lg font-medium"
+                >
+                  {availableVillages.map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                  <option value="OTHER">➕ अन्य गाँव</option>
+                </select>
+              </div>
+            </div>
+
+            {assignedVillage === 'OTHER' && (
+              <div className="pt-1">
+                <input
+                  type="text"
+                  required
+                  value={customVillage}
+                  onChange={(e) => setCustomVillage(e.target.value)}
+                  placeholder="गाँव का नाम लिखें (Enter Village Name)"
+                  className="w-full px-2.5 py-1.5 text-xs bg-white border border-amber-400 rounded-lg font-medium"
+                />
+              </div>
+            )}
+          </div>
+
           {/* Circle */}
           <div>
             <label className="block text-xs font-bold text-gray-700 mb-1">
-              {language === 'hi' ? 'निर्दिष्ट Vi सर्कल (Assigned Circle)' : 'Assigned Circle'}
+              {language === 'hi' ? 'सर्कल हेडक्वार्टर (HQ)' : 'Circle HQ'}
             </label>
             <div className="relative">
               <MapPin className="w-4 h-4 text-gray-400 absolute left-3 top-3" />

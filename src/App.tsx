@@ -140,10 +140,18 @@ function MainAppContent() {
           role: effectiveRole,
           isAdmin: Boolean(isAdmin || isOwner),
           isOwnerAdmin: Boolean(isOwner),
+          isPrimaryOwner: Boolean(isOwner),
+          isOwner: Boolean(isOwner),
           email: user.email,
           phone: userProfile?.phone || userProfile?.phoneNumber || user.phoneNumber || '',
           phoneNumber: user.phoneNumber || userProfile?.phoneNumber || '',
           displayName: userProfile?.displayName || user.displayName,
+          assignedState: userProfile?.assignedState,
+          assignedDistrict: userProfile?.assignedDistrict,
+          assignedTaluka: userProfile?.assignedTaluka,
+          assignedVillage: userProfile?.assignedVillage,
+          assignedVillages: userProfile?.assignedVillages,
+          assignedTerritories: userProfile?.assignedTerritories,
         }
       : null;
 

@@ -29,6 +29,12 @@ import {
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { validateServiceArea, SERVICE_AREA_ERROR } from '../services/leadService';
+import { 
+  getAvailableStates, 
+  getAvailableDistricts, 
+  getAvailableTalukas, 
+  getAvailableVillages 
+} from '../services/territoryService';
 
 interface LeadFormModalProps {
   isOpen: boolean;
@@ -110,6 +116,8 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
   const [state, setState] = useState('Maharashtra');
   const [district, setDistrict] = useState('Buldhana');
   const [taluka, setTaluka] = useState('Mehkar');
+  const [village, setVillage] = useState('Mehkar City');
+  const [customVillage, setCustomVillage] = useState('');
   const [cityCircle, setCityCircle] = useState('Maharashtra & Goa');
   const [address, setAddress] = useState('');
   const [pincode, setPincode] = useState('443301');
@@ -144,6 +152,7 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
       setState(initialLead.state || 'Maharashtra');
       setDistrict(initialLead.district || 'Buldhana');
       setTaluka(initialLead.taluka || 'Mehkar');
+      setVillage(initialLead.village || 'Mehkar City');
       setCityCircle(initialLead.cityCircle || 'Maharashtra & Goa');
       setAddress(initialLead.address || initialLead.customerAddress || '');
       setPincode(initialLead.pincode || '443301');
@@ -182,6 +191,8 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
       setState('Maharashtra');
       setDistrict('Buldhana');
       setTaluka('Mehkar');
+      setVillage('Mehkar City');
+      setCustomVillage('');
       setCityCircle('Maharashtra & Goa');
       setAddress('');
       setPincode('443301');
@@ -207,13 +218,17 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
       return;
     }
 
-    // Strict Service Area Restriction Validation
+    // Service Area Validation
     if (!validateServiceArea(state, district, taluka, pincode)) {
       setValidationError(SERVICE_AREA_ERROR);
       return;
     }
 
     const finalPlan = selectedPlan === 'OTHER' ? (customPlan.trim() || 'Vi Custom Plan') : selectedPlan;
+    const finalVillage = village === 'OTHER' ? (customVillage.trim() || 'Village Area') : village;
+    const formattedAddress = address.trim()
+      ? (address.includes(finalVillage) ? address.trim() : `${address.trim()}, ${finalVillage}, ${taluka}, ${district}, ${state}`)
+      : `${finalVillage}, ${taluka}, ${district}, ${state} - ${pincode}`;
 
     const data: LeadFormData = {
       customerName: customerName.trim(),
@@ -230,13 +245,14 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
       upcExpiryDate: upcExpiryDate || undefined,
       simNumber: simNumber.trim() || undefined,
       simType,
-      state: 'Maharashtra',
-      district: 'Buldhana',
-      taluka: 'Mehkar',
-      cityCircle: 'Maharashtra & Goa',
-      address: address.trim() ? `${address.trim()}, Mehkar, Buldhana, Maharashtra - 443301` : 'Mehkar, Buldhana, Maharashtra - 443301',
-      customerAddress: address.trim() ? `${address.trim()}, Mehkar, Buldhana, Maharashtra - 443301` : 'Mehkar, Buldhana, Maharashtra - 443301',
-      pincode: '443301',
+      state,
+      district,
+      taluka,
+      village: finalVillage,
+      cityCircle: cityCircle || (state === 'Maharashtra' ? 'Maharashtra & Goa' : state),
+      address: formattedAddress,
+      customerAddress: formattedAddress,
+      pincode: pincode.trim() || '443301',
       remarks: remarks.trim() || undefined,
     };
 

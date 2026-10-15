@@ -71,6 +71,24 @@ service cloud.firestore {
       );
     }
 
+    // Territory-Scoped Admin Access:
+    // Primary Owner has universal nationwide access.
+    // Territory Admins can access leads that match their assigned village/taluka or have their UID assigned.
+    function isAssignedOrTerritoryAdmin(leadData) {
+      return isAdmin() && (
+        isPrimaryOwner() ||
+        ('assignedAdminUids' in leadData && request.auth.uid in leadData.assignedAdminUids) ||
+        ('assignedTo' in leadData && leadData.assignedTo == request.auth.uid) ||
+        (
+          hasUserDoc() && (
+            ('assignedVillage' in getUserData() && 'village' in leadData && getUserData().assignedVillage == leadData.village) ||
+            ('assignedTaluka' in getUserData() && 'taluka' in leadData && getUserData().assignedTaluka == leadData.taluka) ||
+            (!('assignedVillage' in getUserData()) && !('assignedVillages' in getUserData()) && !('assignedTerritories' in getUserData()))
+          )
+        )
+      );
+    }
+
     // ==========================================
     // PORTAL SETTINGS & BRANDING CONFIGURATION
     // (Banners, Logo, Admin Help, Text, Announcements, Offers)
@@ -133,8 +151,8 @@ service cloud.firestore {
       );
 
       // Updating user profiles:
-      // - Primary Owner can update any user (e.g. approve/deactivate admins, edit details)
-      // - Self update by Customer: can update name, phone, circle, but CANNOT elevate role or owner flags
+      // - Primary Owner can update any user (e.g. approve/deactivate admins, assign/change village, edit details)
+      // - Self update by Admin/Customer: can update name, phone, but CANNOT change role, status, or assigned village/territories!
       allow update: if isSignedIn() && (
         isPrimaryOwner() ||
         (
@@ -143,7 +161,13 @@ service cloud.firestore {
           (!('status' in request.resource.data) || request.resource.data.status == resource.data.status) &&
           (!('isPrimaryOwner' in request.resource.data) || request.resource.data.isPrimaryOwner != true) &&
           (!('isOwner' in request.resource.data) || request.resource.data.isOwner != true) &&
-          (!('isDeactivated' in request.resource.data) || request.resource.data.isDeactivated == resource.data.isDeactivated)
+          (!('isDeactivated' in request.resource.data) || request.resource.data.isDeactivated == resource.data.isDeactivated) &&
+          (!('assignedVillage' in request.resource.data) || request.resource.data.assignedVillage == resource.data.assignedVillage) &&
+          (!('assignedVillages' in request.resource.data) || request.resource.data.assignedVillages == resource.data.assignedVillages) &&
+          (!('assignedTaluka' in request.resource.data) || request.resource.data.assignedTaluka == resource.data.assignedTaluka) &&
+          (!('assignedDistrict' in request.resource.data) || request.resource.data.assignedDistrict == resource.data.assignedDistrict) &&
+          (!('assignedState' in request.resource.data) || request.resource.data.assignedState == resource.data.assignedState) &&
+          (!('assignedTerritories' in request.resource.data) || request.resource.data.assignedTerritories == resource.data.assignedTerritories)
         )
       );
 
@@ -173,7 +197,7 @@ service cloud.firestore {
     //   - Only Primary Owner can delete a lead upon explicit confirmation.
     match /leads/{leadId} {
       allow get: if isSignedIn() && (
-        isAdmin() ||
+        isAssignedOrTerritoryAdmin(resource.data) ||
         ('customerUid' in resource.data && resource.data.customerUid == request.auth.uid) ||
         ('createdByUid' in resource.data && resource.data.createdByUid == request.auth.uid) ||
         ('email' in request.auth.token && 'customerEmail' in resource.data && resource.data.customerEmail == request.auth.token.email) ||
@@ -201,7 +225,10 @@ service cloud.firestore {
       );
 
       allow update: if isSignedIn() && (
-        isAdmin() ||
+        (
+          isAssignedOrTerritoryAdmin(resource.data) &&
+          (isPrimaryOwner() || !('village' in request.resource.data) || request.resource.data.village == resource.data.village)
+        ) ||
         (
           (
             ('customerUid' in resource.data && resource.data.customerUid == request.auth.uid) ||

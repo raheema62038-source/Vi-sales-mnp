@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   X, 
   Sparkles, 
@@ -13,11 +13,17 @@ import {
   Flame,
   Info
 } from 'lucide-react';
-import { CurrentOperator, LeadFormData, PromotionalOffer, CustomerLocation } from '../types';
+import { CurrentOperator, LeadFormData, PromotionalOffer, CustomerLocation, PortalConfig } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
-import { subscribeToPortalConfig } from '../services/portalConfigService';
-import { DEFAULT_PROMOTIONAL_OFFER } from '../services/offerService';
+import { subscribeToPortalConfig, DEFAULT_PORTAL_CONFIG } from '../services/portalConfigService';
+import { DEFAULT_PROMOTIONAL_OFFER, subscribeToPromotionalOffer } from '../services/offerService';
+import { 
+  getAvailableStates, 
+  getAvailableDistricts, 
+  getAvailableTalukas, 
+  getAvailableVillages 
+} from '../services/territoryService';
 
 interface CustomerBookingModalProps {
   isOpen: boolean;
@@ -49,15 +55,62 @@ export const CustomerBookingModal: React.FC<CustomerBookingModalProps> = ({
   const [localLandmark, setLocalLandmark] = useState('');
   const [validationError, setValidationError] = useState('');
   const [offer, setOffer] = useState<PromotionalOffer>(DEFAULT_PROMOTIONAL_OFFER);
+  const [portalConfig, setPortalConfig] = useState<PortalConfig>(DEFAULT_PORTAL_CONFIG);
+
+  // Village-wise & City-wise Territory Selection State
+  const [selectedState, setSelectedState] = useState('Maharashtra');
+  const [selectedDistrict, setSelectedDistrict] = useState('Buldhana');
+  const [selectedTaluka, setSelectedTaluka] = useState('Mehkar');
+  const [selectedVillage, setSelectedVillage] = useState('Mehkar City');
+  const [customVillage, setCustomVillage] = useState('');
+  const [pincode, setPincode] = useState('443301');
+
+  // Dynamic cascading option lists
+  const availableStates = useMemo(() => getAvailableStates(), []);
+  const availableDistricts = useMemo(() => getAvailableDistricts(selectedState), [selectedState]);
+  const availableTalukas = useMemo(() => getAvailableTalukas(selectedState, selectedDistrict), [selectedState, selectedDistrict]);
+  const availableVillages = useMemo(() => getAvailableVillages(selectedState, selectedDistrict, selectedTaluka), [selectedState, selectedDistrict, selectedTaluka]);
+
+  // Keep cascade in sync when selections change
+  const handleStateChange = (newState: string) => {
+    setSelectedState(newState);
+    const districts = getAvailableDistricts(newState);
+    const newDistrict = districts[0] || '';
+    setSelectedDistrict(newDistrict);
+    const talukas = getAvailableTalukas(newState, newDistrict);
+    const newTaluka = talukas[0] || '';
+    setSelectedTaluka(newTaluka);
+    const villages = getAvailableVillages(newState, newDistrict, newTaluka);
+    setSelectedVillage(villages[0] || 'City Center');
+    setCustomVillage('');
+  };
+
+  const handleDistrictChange = (newDistrict: string) => {
+    setSelectedDistrict(newDistrict);
+    const talukas = getAvailableTalukas(selectedState, newDistrict);
+    const newTaluka = talukas[0] || '';
+    setSelectedTaluka(newTaluka);
+    const villages = getAvailableVillages(selectedState, newDistrict, newTaluka);
+    setSelectedVillage(villages[0] || 'City Center');
+    setCustomVillage('');
+  };
+
+  const handleTalukaChange = (newTaluka: string) => {
+    setSelectedTaluka(newTaluka);
+    const villages = getAvailableVillages(selectedState, selectedDistrict, newTaluka);
+    setSelectedVillage(villages[0] || 'City Center');
+    setCustomVillage('');
+  };
   
   // Location capture state
   const [customerLocation, setCustomerLocation] = useState<CustomerLocation | null>(null);
   const [isLocating, setIsLocating] = useState(false);
   const [locationStatusMsg, setLocationStatusMsg] = useState('');
 
-  // Subscribe to real-time Admin-controlled offer from Portal Settings
+  // Subscribe to real-time Admin-controlled offer & portal settings
   useEffect(() => {
-    const unsub = subscribeToPortalConfig((liveConfig) => {
+    const unsubPortal = subscribeToPortalConfig((liveConfig) => {
+      setPortalConfig(liveConfig);
       if (liveConfig.offers && liveConfig.offers.length > 0) {
         const primary = liveConfig.offers.find(o => o.enabled) || liveConfig.offers[0];
         setOffer({
@@ -69,7 +122,19 @@ export const CustomerBookingModal: React.FC<CustomerBookingModalProps> = ({
         });
       }
     });
-    return () => unsub();
+    const unsubPromo = subscribeToPromotionalOffer((livePromo) => {
+      if (livePromo && livePromo.heading) {
+        setOffer((prev) => {
+          const prevTime = prev.updatedAt ? new Date(prev.updatedAt).getTime() : 0;
+          const nextTime = livePromo.updatedAt ? new Date(livePromo.updatedAt).getTime() : 0;
+          return nextTime >= prevTime ? livePromo : prev;
+        });
+      }
+    });
+    return () => {
+      unsubPortal();
+      unsubPromo();
+    };
   }, []);
 
   // Request GPS location upon explicit customer button press
@@ -152,9 +217,15 @@ export const CustomerBookingModal: React.FC<CustomerBookingModalProps> = ({
       return;
     }
 
-    const fixedAddress = localLandmark.trim()
-      ? `${localLandmark.trim()}, Mehkar, Buldhana, Maharashtra - 443301`
-      : 'Mehkar, Buldhana, Maharashtra - 443301';
+    const finalVillage = (selectedVillage === 'OTHER' ? customVillage.trim() : selectedVillage) || 'Village Area';
+    if (selectedVillage === 'OTHER' && !customVillage.trim()) {
+      setValidationError(isHindi ? 'कृपया अपने गाँव / क्षेत्र का नाम दर्ज करें।' : 'Please enter your village / area name.');
+      return;
+    }
+
+    const formattedAddress = localLandmark.trim()
+      ? `${localLandmark.trim()}, ${finalVillage}, ${selectedTaluka}, ${selectedDistrict}, ${selectedState}${pincode ? ` - ${pincode}` : ''}`
+      : `${finalVillage}, ${selectedTaluka}, ${selectedDistrict}, ${selectedState}${pincode ? ` - ${pincode}` : ''}`;
 
     const leadData: LeadFormData = {
       customerName: trimmedName,
@@ -166,14 +237,15 @@ export const CustomerBookingModal: React.FC<CustomerBookingModalProps> = ({
       bookingStatus: 'Lead Received',
       bookingCount: 1,
       status: 'New',
-      state: 'Maharashtra',
-      district: 'Buldhana',
-      taluka: 'Mehkar',
-      cityCircle: 'Maharashtra & Goa',
-      address: fixedAddress,
-      customerAddress: fixedAddress,
-      pincode: '443301',
-      remarks: `Customer booked via promotional offer: ${offer.heading || 'VI 5G READY MEHKAR'}. Operator: ${currentOperator}${customerLocation ? ` [GPS Shared: ${customerLocation.latitude}, ${customerLocation.longitude}]` : ''}`,
+      state: selectedState,
+      district: selectedDistrict,
+      taluka: selectedTaluka,
+      village: finalVillage,
+      cityCircle: selectedState === 'Maharashtra' ? 'Maharashtra & Goa' : selectedState,
+      address: formattedAddress,
+      customerAddress: formattedAddress,
+      pincode: pincode.trim() || '443301',
+      remarks: `Customer booked via promotional offer: ${offer.heading || 'VI 5G READY'}. Area: ${finalVillage}, ${selectedTaluka}, ${selectedDistrict}. Operator: ${currentOperator}${customerLocation ? ` [GPS Shared: ${customerLocation.latitude}, ${customerLocation.longitude}]` : ''}`,
       ...(customerLocation ? { locationCoordinates: customerLocation } : {}),
       customerVerificationStatus: 'Pending',
       isCustomerVerified: false,
@@ -194,8 +266,12 @@ export const CustomerBookingModal: React.FC<CustomerBookingModalProps> = ({
         {/* Sticky Header with Red Theme */}
         <div className="sticky top-0 z-10 bg-gradient-to-r from-red-600 via-red-700 to-red-600 text-white p-4 sm:p-5 flex items-center justify-between shadow-md">
           <div className="flex items-center gap-2.5">
-            <div className="w-10 h-10 rounded-2xl bg-white text-red-600 font-black text-xl flex items-center justify-center shadow-xs border-2 border-amber-300 shrink-0">
-              V<span className="text-amber-500 text-lg">!</span>
+            <div className="w-10 h-10 rounded-2xl bg-white text-red-600 font-black text-xl flex items-center justify-center shadow-xs border-2 border-amber-300 shrink-0 overflow-hidden">
+              {portalConfig.logo?.imageUrl ? (
+                <img src={portalConfig.logo.imageUrl} alt={portalConfig.logo.text} className="w-8 h-8 object-contain" />
+              ) : (
+                <span>{portalConfig.logo?.symbol || 'V!'}</span>
+              )}
             </div>
             <div>
               <div className="flex items-center gap-1.5">
@@ -351,46 +427,159 @@ export const CustomerBookingModal: React.FC<CustomerBookingModalProps> = ({
             </div>
 
             {/* ======================================================== */}
-            {/* FIXED SERVICE AREA / ADDRESS (LOCKED)                    */}
-            {/* Mehkar, Buldhana, Maharashtra - 443301                   */}
+            {/* 4. VILLAGE & CITY AREA SELECTION DROPDOWNS               */}
+            {/* Cascading State -> District -> Taluka -> Village         */}
             {/* ======================================================== */}
-            <div className="bg-slate-50 rounded-2xl p-3.5 border-2 border-slate-200 space-y-2">
+            <div className="bg-slate-50 rounded-2xl p-3.5 border-2 border-red-200/90 space-y-3">
               <div className="flex items-center justify-between">
-                <span className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
-                  <MapPin className="w-3.5 h-3.5 text-red-600" />
-                  <span>{isHindi ? 'फिक्स्ड सर्विस एरिया (Doorstep Delivery)' : 'Fixed Service Area'}</span>
+                <span className="font-extrabold text-slate-900 flex items-center gap-1.5 text-xs">
+                  <MapPin className="w-4 h-4 text-red-600 shrink-0" />
+                  <span>4. {isHindi ? 'डोरस्टेप सिम डिलीवरी क्षेत्र (गाँव / शहर)' : 'Doorstep SIM Delivery Area'}</span>
+                  <span className="text-red-500">*</span>
                 </span>
-                <span className="text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300 px-2 py-0.5 rounded-md flex items-center gap-1">
-                  <Lock className="w-3 h-3 text-amber-800" />
-                  {isHindi ? 'अपरिवर्तनीय' : 'Fixed Address'}
+                <span className="text-[10px] font-black bg-red-100 text-red-700 px-2 py-0.5 rounded-full border border-red-200 uppercase">
+                  {isHindi ? 'गाँव-वार सेवा' : 'Village-Wise'}
                 </span>
               </div>
 
-              {/* Fixed Address Details */}
-              <div className="bg-white p-2.5 rounded-xl border border-slate-200 text-slate-800 space-y-1">
-                <div className="font-extrabold text-xs text-red-700 flex items-center justify-between">
-                  <span>Mehkar, Buldhana, Maharashtra - 443301</span>
-                  <ShieldCheck className="w-4 h-4 text-emerald-600" />
+              {/* Grid of cascading dropdowns */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {/* Dropdown 1: State */}
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                    {isHindi ? 'राज्य (State)' : 'State'} <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={selectedState}
+                    onChange={(e) => handleStateChange(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  >
+                    {availableStates.map((st) => (
+                      <option key={st} value={st}>
+                        {st}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <p className="text-[10px] text-slate-500">
-                  {isHindi 
-                    ? 'सेवा क्षेत्र स्थायी रूप से मेहेकर (443301) के लिए निर्धारित है। ग्राहक इसे बदल नहीं सकते।' 
-                    : 'Service address is fixed to Mehkar (443301). Customer cannot edit or replace this.'}
-                </p>
+
+                {/* Dropdown 2: District */}
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                    {isHindi ? 'ज़िला (District)' : 'District'} <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={selectedDistrict}
+                    onChange={(e) => handleDistrictChange(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  >
+                    {availableDistricts.map((dist) => (
+                      <option key={dist} value={dist}>
+                        {dist}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Dropdown 3: Taluka / City */}
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                    {isHindi ? 'तहसील / शहर (Taluka / City)' : 'Taluka / City'} <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={selectedTaluka}
+                    onChange={(e) => handleTalukaChange(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  >
+                    {availableTalukas.map((tal) => (
+                      <option key={tal} value={tal}>
+                        {tal}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Dropdown 4: Village / Area */}
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                    {isHindi ? 'गाँव / क्षेत्र (Village / Area)' : 'Village / Area'} <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={selectedVillage}
+                    onChange={(e) => setSelectedVillage(e.target.value)}
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-bold text-slate-800 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  >
+                    {availableVillages.map((vil) => (
+                      <option key={vil} value={vil}>
+                        {vil}
+                      </option>
+                    ))}
+                    <option value="OTHER">
+                      {isHindi ? '➕ अन्य गाँव / कस्टम क्षेत्र' : '➕ Other Village / Custom Area'}
+                    </option>
+                  </select>
+                </div>
               </div>
 
-              {/* Optional Landmark / Colony within Mehkar */}
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                  {isHindi ? 'घर क्र. / गली / लैंडमार्क (मेहेकर में - वैकल्पिक)' : 'House / Landmark in Mehkar (Optional)'}
-                </label>
-                <input
-                  type="text"
-                  value={localLandmark}
-                  onChange={(e) => setLocalLandmark(e.target.value)}
-                  placeholder={isHindi ? 'उदा. शिवाजी चौक, कॉलेज रोड, मेहेकर' : 'e.g. Near Bus Stand, College Road'}
-                  className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-red-500 focus:outline-none"
-                />
+              {/* If "OTHER" village selected: show custom village text field */}
+              {selectedVillage === 'OTHER' && (
+                <div className="bg-amber-50 p-2.5 rounded-xl border border-amber-300 animate-in fade-in">
+                  <label className="block text-[10px] font-bold text-amber-900 mb-1">
+                    {isHindi ? 'अपने गाँव / क्षेत्र का नाम लिखें:' : 'Enter your Village / Area Name:'} <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={customVillage}
+                    onChange={(e) => setCustomVillage(e.target.value)}
+                    placeholder={isHindi ? 'उदा. सावित्री नगर, सोनटी, उमरा' : 'e.g. Sonati, Umra, Savitri Nagar'}
+                    className="w-full px-3 py-2 text-xs bg-white border border-amber-400 rounded-xl font-bold text-slate-900 focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {/* Selected Area Confirmation Badge */}
+              <div className="bg-white p-2.5 rounded-xl border border-red-100 flex items-center justify-between text-xs">
+                <div className="flex items-center gap-1.5 text-slate-800">
+                  <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span className="font-bold">
+                    {isHindi ? 'सेवा क्षेत्र:' : 'Service Area:'}{' '}
+                    <span className="text-red-700">
+                      {selectedVillage === 'OTHER' ? (customVillage || 'कस्टम क्षेत्र') : selectedVillage}, {selectedTaluka}, {selectedDistrict}
+                    </span>
+                  </span>
+                </div>
+                <span className="text-[10px] font-extrabold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+                  {isHindi ? '✓ बुकिंग इसी गाँव के Admin को मिलेगी' : '✓ Routed to Local Admin'}
+                </span>
+              </div>
+
+              {/* House / Street / Landmark */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="sm:col-span-2">
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                    {isHindi ? 'घर क्र. / गली / लैंडमार्क (वैकल्पिक)' : 'House / Street / Landmark (Optional)'}
+                  </label>
+                  <input
+                    type="text"
+                    value={localLandmark}
+                    onChange={(e) => setLocalLandmark(e.target.value)}
+                    placeholder={isHindi ? 'उदा. बस स्टैंड के पास, मुख्य चौक' : 'e.g. Near Bus Stand, Main Chowk'}
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                    {isHindi ? 'पिन कोड (PIN Code)' : 'PIN Code'}
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={pincode}
+                    onChange={(e) => setPincode(e.target.value.replace(/\D/g, ''))}
+                    placeholder="443301"
+                    className="w-full px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl font-mono font-bold focus:ring-2 focus:ring-red-500 focus:outline-none"
+                  />
+                </div>
               </div>
 
               {/* Live GPS Location Capture Block (Secure & Opt-in) */}

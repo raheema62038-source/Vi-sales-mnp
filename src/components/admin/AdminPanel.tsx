@@ -36,7 +36,11 @@ import {
   Radio,
   FileText,
   Truck,
-  Download
+  Download,
+  Building2,
+  Crown,
+  Shield,
+  UserCheck
 } from 'lucide-react';
 import { 
   Lead, 
@@ -49,11 +53,28 @@ import {
   PortalTexts,
   AppUpdateConfig,
   BookingStatus,
-  CurrentOperator
+  CurrentOperator,
+  UserProfile,
+  AdminTerritoryAssignment
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
-import { isEmailPrimaryOwner } from '../../services/userService';
+import { 
+  isEmailPrimaryOwner,
+  getAllUsers,
+  subscribeToAllUsers,
+  deactivateAdminUser,
+  reactivateAdminUser,
+  deleteCustomerUser
+} from '../../services/userService';
+import {
+  getAvailableStates,
+  getAvailableDistricts,
+  getAvailableTalukas,
+  getAvailableVillages,
+} from '../../services/territoryService';
+import { TerritoryAssignmentModal } from './TerritoryAssignmentModal';
+import { AddAdminModal } from '../AddAdminModal';
 import { 
   updateLeadBookingStatus, 
   updateLeadVerificationStatus, 
@@ -96,6 +117,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [operatorFilter, setOperatorFilter] = useState<string>('ALL');
   const [verificationFilter, setVerificationFilter] = useState<string>('ALL');
+  const [villageFilter, setVillageFilter] = useState<string>('ALL');
+
+  // Territory Management & Admin Assignment State
+  const [allAdminsList, setAllAdminsList] = useState<UserProfile[]>([]);
+  const [selectedAdminForTerritory, setSelectedAdminForTerritory] = useState<UserProfile | null>(null);
+  const [isTerritoryModalOpen, setIsTerritoryModalOpen] = useState(false);
+  const [isAddAdminModalOpen, setIsAddAdminModalOpen] = useState(false);
+
+  // Customer Login Directory & Owner Delete State
+  const [customerSearchQuery, setCustomerSearchQuery] = useState('');
+  const [customerLoginFilter, setCustomerLoginFilter] = useState<'ALL' | 'LOGGED_IN' | 'NOT_LOGGED_IN'>('ALL');
+  const [customerToDelete, setCustomerToDelete] = useState<UserProfile | null>(null);
+  const [isDeletingCustomer, setIsDeletingCustomer] = useState(false);
 
   // App Update Preview Modal
   const [isPreviewUpdateModalOpen, setIsPreviewUpdateModalOpen] = useState(false);
@@ -125,6 +159,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     });
     return () => unsub();
   }, []);
+
+  // Subscribe to all users in real-time for territory admin assignments and customer login directory
+  useEffect(() => {
+    const unsub = subscribeToAllUsers((liveUsers) => {
+      if (liveUsers) {
+        setAllAdminsList(liveUsers);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Strict RBAC: Non-owner Admins can access Dashboard, Bookings, Customers, and Profile/Help
+  useEffect(() => {
+    if (!isPrimaryOwner && activeSection !== 'dashboard' && activeSection !== 'bookings' && activeSection !== 'customers' && activeSection !== 'admin-help') {
+      setActiveSection('bookings');
+    }
+  }, [isPrimaryOwner, activeSection]);
+
+  // Compute available villages for filter
+  const availableVillageOptions = useMemo(() => {
+    const vSet = new Set<string>();
+    const mehkarVillages = getAvailableVillages('Maharashtra', 'Buldhana', 'Mehkar');
+    mehkarVillages.forEach((v) => vSet.add(v));
+    leads.forEach((l) => {
+      if (l.village) vSet.add(l.village);
+    });
+    return Array.from(vSet).sort();
+  }, [leads]);
 
   const triggerSaveNotification = (msg: string) => {
     setSaveSuccessMsg(msg);
@@ -161,6 +223,64 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
   }, [leads]);
 
+  // Customer Users List from real-time database (Firestore users collection)
+  const customerUsersList = useMemo(() => {
+    return allAdminsList.filter(
+      (u) => u.role === 'customer' || (!u.role && !isEmailPrimaryOwner(u.email))
+    );
+  }, [allAdminsList]);
+
+  const totalCustomersCount = customerUsersList.length;
+  const totalCustomersLoggedInCount = customerUsersList.filter(
+    (u) => u.hasLoggedIn || (u.loginCount && u.loginCount > 0) || Boolean(u.lastLoginAt)
+  ).length;
+
+  const filteredCustomerUsers = useMemo(() => {
+    let list = customerUsersList;
+
+    if (customerLoginFilter === 'LOGGED_IN') {
+      list = list.filter((u) => u.hasLoggedIn || (u.loginCount && u.loginCount > 0) || Boolean(u.lastLoginAt));
+    } else if (customerLoginFilter === 'NOT_LOGGED_IN') {
+      list = list.filter((u) => !u.hasLoggedIn && (!u.loginCount || u.loginCount === 0) && !u.lastLoginAt);
+    }
+
+    if (!customerSearchQuery.trim()) return list;
+    const q = customerSearchQuery.toLowerCase().trim();
+    return list.filter((u) => {
+      const name = (u.displayName || '').toLowerCase();
+      const email = (u.email || '').toLowerCase();
+      const phone = (u.phone || u.phoneNumber || '').toLowerCase();
+      const uid = (u.uid || '').toLowerCase();
+      return name.includes(q) || email.includes(q) || phone.includes(q) || uid.includes(q);
+    });
+  }, [customerUsersList, customerLoginFilter, customerSearchQuery]);
+
+  const handleDeleteCustomerConfirm = async () => {
+    if (!customerToDelete) return;
+    if (!isPrimaryOwner) {
+      setActionErrorMsg(isHindi ? 'सुरक्षा नियम: केवल Owner ही ग्राहक आईडी डिलीट कर सकते हैं।' : 'Security rule: Only Owner can delete customer IDs.');
+      setCustomerToDelete(null);
+      return;
+    }
+
+    try {
+      setIsDeletingCustomer(true);
+      setActionErrorMsg(null);
+      await deleteCustomerUser(customerToDelete.uid, user?.email || undefined);
+      triggerSaveNotification(
+        isHindi
+          ? `✓ ग्राहक आईडी "${customerToDelete.displayName || customerToDelete.phone || customerToDelete.uid}" सफलतापूर्वक डिलीट कर दी गई!`
+          : `✓ Customer ID "${customerToDelete.displayName || customerToDelete.phone || customerToDelete.uid}" deleted successfully!`
+      );
+      setCustomerToDelete(null);
+    } catch (err: any) {
+      console.error('Delete customer error:', err);
+      setActionErrorMsg(err?.message || (isHindi ? 'ग्राहक आईडी डिलीट करने में त्रुटि हुई' : 'Failed to delete customer ID'));
+    } finally {
+      setIsDeletingCustomer(false);
+    }
+  };
+
   // Filtered Bookings List
   const filteredBookings = useMemo(() => {
     return leads.filter((lead) => {
@@ -184,9 +304,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         (verificationFilter === 'VERIFIED' && (lead.isCustomerVerified || lead.customerVerificationStatus === 'Verified')) ||
         (verificationFilter === 'UNVERIFIED' && (!lead.isCustomerVerified && lead.customerVerificationStatus !== 'Verified'));
 
-      return matchesSearch && matchesStatus && matchesOperator && matchesVerification;
+      const matchesVillage =
+        villageFilter === 'ALL' ||
+        (lead.village && lead.village.toLowerCase() === villageFilter.toLowerCase()) ||
+        (lead.address && lead.address.toLowerCase().includes(villageFilter.toLowerCase()));
+
+      return matchesSearch && matchesStatus && matchesOperator && matchesVerification && matchesVillage;
     });
-  }, [leads, searchQuery, statusFilter, operatorFilter, verificationFilter]);
+  }, [leads, searchQuery, statusFilter, operatorFilter, verificationFilter, villageFilter]);
 
   // Aggregated Customers List
   const aggregatedCustomers = useMemo(() => {
@@ -386,13 +511,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </span>
                 </h1>
               </div>
-              <p className="text-xs text-slate-400 flex items-center gap-1.5">
-                <span>{user?.email || 'Admin'}</span>
+              <p className="text-xs text-slate-400 flex items-center gap-1.5 flex-wrap">
+                <span className="font-mono text-slate-300">{user?.email || 'Admin'}</span>
                 <span>•</span>
-                <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  {isPrimaryOwner ? 'Primary Owner' : 'Administrator'}
+                <span className={`${isPrimaryOwner ? 'text-amber-400 font-extrabold' : 'text-emerald-400 font-bold'} flex items-center gap-1`}>
+                  {isPrimaryOwner ? (
+                    <>
+                      <Crown className="w-3.5 h-3.5 text-amber-400" />
+                      <span>{isHindi ? 'Primary Owner (सर्वोच्च स्वामी)' : 'Primary Owner Admin'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>{isHindi ? 'गाँव एडमिन (Village Admin)' : 'Village Admin'}</span>
+                    </>
+                  )}
                 </span>
+                {!isPrimaryOwner && (userProfile?.assignedVillage || userProfile?.assignedTaluka) && (
+                  <>
+                    <span>•</span>
+                    <span className="text-amber-300 font-bold bg-amber-950/60 border border-amber-800/80 px-2 py-0.5 rounded-md text-[11px] flex items-center gap-1">
+                      <MapPin className="w-3 h-3 text-amber-400" />
+                      <span>{userProfile.assignedVillage || userProfile.assignedTaluka} ({userProfile.assignedTaluka || 'Mehkar'}, {userProfile.assignedDistrict || 'Buldhana'})</span>
+                    </span>
+                  </>
+                )}
               </p>
             </div>
           </div>
@@ -442,18 +585,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* Navigation Tabs Bar */}
         <div className="bg-slate-950/80 border-t border-slate-800 px-4 overflow-x-auto scrollbar-none">
           <div className="max-w-7xl mx-auto flex items-center gap-1 py-1 text-xs font-bold">
-            {[
-              { id: 'dashboard', label: isHindi ? 'डैशबोर्ड' : 'Dashboard', icon: LayoutDashboard },
-              { id: 'bookings', label: isHindi ? 'बुकिंग्स' : 'Bookings', icon: CalendarCheck, count: stats.totalBookings },
-              { id: 'customers', label: isHindi ? 'कस्टमर्स' : 'Customers', icon: Users, count: stats.totalCustomers },
-              { id: 'offers', label: isHindi ? 'ऑफर' : 'Offers', icon: Flame },
-              { id: 'banners', label: isHindi ? 'बैनर' : 'Banners', icon: ImageIcon },
-              { id: 'logo', label: isHindi ? 'लोगो' : 'Logo', icon: Sparkles },
-              { id: 'admin-help', label: isHindi ? 'हेल्प नंबर' : 'Admin Help', icon: PhoneCall },
-              { id: 'locations', label: isHindi ? 'मैप / लोकेशन' : 'Map/Locations', icon: MapPin, count: stats.mappedLocations },
-              { id: 'app-updates', label: isHindi ? 'ऐप अपडेट' : 'App Updates', icon: Download },
-              { id: 'settings', label: isHindi ? 'सेटिंग्स' : 'Settings', icon: Settings },
-            ].map((tab) => {
+            {(isPrimaryOwner
+              ? [
+                  { id: 'dashboard', label: isHindi ? 'डैशबोर्ड' : 'Dashboard', icon: LayoutDashboard },
+                  { id: 'bookings', label: isHindi ? 'बुकिंग्स (सभी गाँव)' : 'All Bookings', icon: CalendarCheck, count: stats.totalBookings },
+                  { id: 'territories', label: isHindi ? 'क्षेत्र / एडमिन आवंटन' : 'Territories & Admins', icon: Building2 },
+                  { id: 'customers', label: isHindi ? 'कस्टमर्स' : 'Customers', icon: Users, count: totalCustomersCount },
+                  { id: 'offers', label: isHindi ? 'ऑफर' : 'Offers', icon: Flame },
+                  { id: 'banners', label: isHindi ? 'बैनर' : 'Banners', icon: ImageIcon },
+                  { id: 'logo', label: isHindi ? 'लोगो' : 'Logo', icon: Sparkles },
+                  { id: 'admin-help', label: isHindi ? 'हेल्प नंबर' : 'Admin Help', icon: PhoneCall },
+                  { id: 'locations', label: isHindi ? 'मैप / लोकेशन' : 'Map/Locations', icon: MapPin, count: stats.mappedLocations },
+                  { id: 'app-updates', label: isHindi ? 'ऐप अपडेट' : 'App Updates', icon: Download },
+                  { id: 'settings', label: isHindi ? 'सेटिंग्स' : 'Settings', icon: Settings },
+                ]
+              : [
+                  { id: 'dashboard', label: isHindi ? 'डैशबोर्ड' : 'Dashboard', icon: LayoutDashboard },
+                  { id: 'bookings', label: isHindi ? 'गाँव की बुकिंग्स' : 'Village Bookings', icon: CalendarCheck, count: stats.totalBookings },
+                  { id: 'customers', label: isHindi ? 'कस्टमर्स लॉगिन' : 'Customer Logins', icon: Users, count: totalCustomersLoggedInCount },
+                  { id: 'admin-help', label: isHindi ? 'हेल्प व प्रोफाइल' : 'Help & Profile', icon: PhoneCall },
+                ]
+            ).map((tab) => {
               const Icon = tab.icon;
               const isActive = activeSection === tab.id;
               return (
@@ -606,14 +758,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <div 
                 onClick={() => setActiveSection('customers')}
-                className="bg-white p-4 rounded-3xl border border-slate-200 shadow-xs hover:border-slate-400 transition-all cursor-pointer space-y-2"
+                className="bg-white p-4 rounded-3xl border border-slate-200 shadow-xs hover:border-emerald-400 transition-all cursor-pointer space-y-2 group"
+                title={isHindi ? "ग्राहक लॉगिन सूची देखें" : "View Customer Logins"}
               >
-                <div className="w-8 h-8 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center">
-                  <Users className="w-4 h-4" />
+                <div className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center group-hover:bg-emerald-600 group-hover:text-white transition-all">
+                  <UserCheck className="w-4 h-4" />
                 </div>
                 <div>
-                  <div className="text-2xl font-black text-slate-900">{stats.totalCustomers}</div>
-                  <div className="text-xs font-bold text-slate-500">{isHindi ? 'कस्टमर रिकॉर्ड्स' : 'Total Customers'}</div>
+                  <div className="text-2xl font-black text-slate-900 flex items-baseline gap-1.5">
+                    <span>{totalCustomersLoggedInCount}</span>
+                    <span className="text-xs font-bold text-slate-400">/ {totalCustomersCount}</span>
+                  </div>
+                  <div className="text-xs font-bold text-emerald-800 flex items-center justify-between">
+                    <span>{isHindi ? 'लॉगिन किए ग्राहक' : 'Logged In Customers'}</span>
+                    <ArrowUpRight className="w-3.5 h-3.5 text-emerald-500" />
+                  </div>
                 </div>
               </div>
             </div>
@@ -789,6 +948,53 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* ======================================================== */}
         {activeSection === 'bookings' && (
           <div className="space-y-4">
+            {/* Territory Scoping & Role Info Banner */}
+            {!isPrimaryOwner ? (
+              <div className="bg-gradient-to-r from-red-50 via-amber-50 to-red-50 border-2 border-red-200 rounded-3xl p-4 text-xs flex flex-wrap items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                    <MapPin className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-extrabold text-slate-900 text-sm">
+                        {isHindi ? 'आपका निर्धारित गाँव:' : 'Your Assigned Village:'}
+                      </span>
+                      <span className="font-black text-red-700 bg-red-100 border border-red-200 px-2.5 py-0.5 rounded-full text-xs">
+                        🏡 {userProfile?.assignedVillage || 'Mehkar City'}
+                      </span>
+                      <span className="text-slate-600 font-bold">
+                        ({userProfile?.assignedTaluka || 'Mehkar'}, {userProfile?.assignedDistrict || 'Buldhana'}, {userProfile?.assignedState || 'Maharashtra'})
+                      </span>
+                    </div>
+                    <p className="text-slate-600 text-[11px] mt-0.5 font-medium">
+                      {isHindi
+                        ? 'सुरक्षा नियम: आप केवल Owner द्वारा निर्धारित अपने गाँव के ग्राहकों का नाम, मोबाइल नंबर, बुकिंग की तारीख, पता और पोर्टिंग स्टेटस देख सकते हैं। दूसरे गाँव का डेटा पूर्णतः सुरक्षित है।'
+                        : 'Security Policy: You are viewing customer name, phone, booking date, address, and porting status strictly for your assigned village.'}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-[11px] font-bold text-slate-600 bg-white/90 border border-slate-200 px-3 py-1.5 rounded-xl flex items-center gap-1.5 shadow-2xs">
+                  <Lock className="w-3.5 h-3.5 text-amber-600" />
+                  <span>{isHindi ? 'भूमिका व गाँव: केवल Owner द्वारा परिवर्तनीय' : 'Role & Village: Owner Assigned Only'}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-gradient-to-r from-amber-500/10 via-red-500/10 to-amber-500/10 border border-amber-300 rounded-2xl p-3 px-4 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Crown className="w-4 h-4 text-amber-600" />
+                  <span className="font-extrabold text-slate-900">
+                    {isHindi
+                      ? '👑 Super Owner View: आप सभी 20+ गाँवों और सभी Admins की बुकिंग्स देख रहे हैं।'
+                      : '👑 Super Owner View: You are viewing customer bookings across all villages and all Admins nationwide.'}
+                  </span>
+                </div>
+                <span className="text-[11px] font-bold text-amber-900 bg-amber-100 px-2 py-0.5 rounded-full border border-amber-200">
+                  {leads.length} {isHindi ? 'कुल बुकिंग्स' : 'Total Bookings'}
+                </span>
+              </div>
+            )}
+
             {/* Top Filter and Search Bar */}
             <div className="bg-white p-4 rounded-3xl border border-slate-200 shadow-xs space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -813,13 +1019,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
 
                   {/* Reset Filters */}
-                  {(statusFilter !== 'ALL' || operatorFilter !== 'ALL' || verificationFilter !== 'ALL' || searchQuery) && (
+                  {(statusFilter !== 'ALL' || operatorFilter !== 'ALL' || verificationFilter !== 'ALL' || villageFilter !== 'ALL' || searchQuery) && (
                     <button
                       type="button"
                       onClick={() => {
                         setStatusFilter('ALL');
                         setOperatorFilter('ALL');
                         setVerificationFilter('ALL');
+                        setVillageFilter('ALL');
                         setSearchQuery('');
                       }}
                       className="text-xs font-bold text-slate-500 hover:text-red-600 underline"
@@ -832,6 +1039,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               {/* Filter Pills */}
               <div className="flex flex-wrap gap-2 pt-1 text-xs">
+                {/* Village / Area Filter */}
+                <div className="flex items-center gap-1 bg-red-50 border border-red-200 px-2 py-1 rounded-xl">
+                  <MapPin className="w-3.5 h-3.5 text-red-600" />
+                  <span className="text-red-950 font-bold text-[11px]">{isHindi ? 'गाँव / क्षेत्र:' : 'Village / Area:'}</span>
+                  <select
+                    value={villageFilter}
+                    onChange={(e) => setVillageFilter(e.target.value)}
+                    className="bg-transparent font-bold text-red-900 focus:outline-none text-xs max-w-44 truncate"
+                  >
+                    <option value="ALL">{isHindi ? 'सभी गाँव / क्षेत्र' : 'All Villages / Areas'}</option>
+                    {availableVillageOptions.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
                 <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 px-2 py-1 rounded-xl">
                   <span className="text-slate-500 font-bold text-[11px]">Status:</span>
                   <select
@@ -1031,94 +1256,376 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
 
         {/* ======================================================== */}
-        {/* 3. CUSTOMERS SECTION                                     */}
+        {/* 3. CUSTOMERS SECTION (LOGIN DIRECTORY & OWNER DELETE)    */}
         {/* ======================================================== */}
         {activeSection === 'customers' && (
-          <div className="space-y-4">
+          <div className="space-y-5">
+            {/* Header Banner */}
             <div className="bg-white p-5 rounded-3xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
-                  <Users className="w-5 h-5 text-red-600" />
-                  <span>Verified Customer Directory ({aggregatedCustomers.length})</span>
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Unique customers aggregated by registered mobile number with direct contact & verification controls.
-                </p>
+                <div className="flex items-center gap-2">
+                  <div className="w-9 h-9 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center font-bold">
+                    <Users className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-base text-slate-900 flex items-center gap-2">
+                      <span>{isHindi ? 'ग्राहक लॉगिन एवं आईडी प्रबंधन' : 'Customer Logins & ID Directory'}</span>
+                      <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                        {filteredCustomerUsers.length} / {totalCustomersCount} {isHindi ? 'ग्राहक' : 'Customers'}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {isHindi 
+                        ? 'कितने ग्राहकों ने आईडी लॉगिन किया है, उनकी सूची, अंतिम लॉगिन समय और विवरण। केवल Primary Owner को आईडी डिलीट करने की अनुमति है।'
+                        : 'Real-time overview of customer ID logins, last login activity, and accounts. ID deletion is strictly reserved for Primary Owner.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 border ${
+                  isPrimaryOwner 
+                    ? 'bg-amber-50 text-amber-900 border-amber-300' 
+                    : 'bg-blue-50 text-blue-900 border-blue-200'
+                }`}>
+                  {isPrimaryOwner ? <Crown className="w-4 h-4 text-amber-600" /> : <Shield className="w-4 h-4 text-blue-600" />}
+                  <span>
+                    {isPrimaryOwner 
+                      ? (isHindi ? '👑 Owner: आईडी डिलीट की अनुमति' : '👑 Owner: ID Delete Authorized')
+                      : (isHindi ? '🛡️ Admin: केवल देखने की अनुमति' : '🛡️ Admin: View-Only Access')}
+                  </span>
+                </span>
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {aggregatedCustomers.map((c) => (
-                <div
-                  key={c.phone}
-                  className="bg-white rounded-3xl border border-slate-200 p-5 shadow-xs hover:shadow-md transition-all space-y-3 flex flex-col justify-between"
-                >
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <h4 className="font-black text-slate-900 text-base">{c.name}</h4>
-                      {c.isVerified ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
-                          <ShieldCheck className="w-3 h-3 text-emerald-600" />
-                          Verified
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200 flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-amber-600" />
-                          Unverified
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="text-sm font-black font-mono text-slate-800">
-                      +91 {c.phone}
-                    </div>
-
-                    <div className="text-xs text-slate-500 space-y-1 bg-slate-50 p-2.5 rounded-2xl border border-slate-100">
-                      <div>Total Bookings: <strong className="text-slate-800">{c.totalBookings}</strong></div>
-                      <div className="truncate">Address: <strong>{c.address}</strong></div>
-                      <div>Last active: <strong>{new Date(c.lastBookingDate).toLocaleDateString()}</strong></div>
-                    </div>
+            {/* 4 Customer Statistics Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              {/* Card 1: Total Customer IDs */}
+              <div className="bg-white p-4 rounded-3xl border border-blue-200/90 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+                    <Users className="w-5 h-5" />
                   </div>
-
-                  <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5">
-                      <a
-                        href={`tel:${c.phone}`}
-                        className="p-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200"
-                        title="Call Customer"
-                      >
-                        <Phone className="w-3.5 h-3.5" />
-                      </a>
-                      <a
-                        href={`https://wa.me/91${c.phone}?text=${encodeURIComponent('Hello ' + c.name + ', your Vi Porting doorstep request is being processed.')}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="p-2 rounded-xl bg-green-50 hover:bg-green-100 text-green-700 border border-green-200"
-                        title="WhatsApp Customer"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                      </a>
-                    </div>
-
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => handleToggleVerification(c.latestLead)}
-                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
-                      >
-                        {c.isVerified ? 'Unverify' : 'Verify'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedBookingForDetails(c.latestLead)}
-                        className="px-3 py-1.5 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white cursor-pointer"
-                      >
-                        View
-                      </button>
-                    </div>
-                  </div>
+                  <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
+                    {isHindi ? 'कुल खाते' : 'Total IDs'}
+                  </span>
                 </div>
-              ))}
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-slate-900 leading-none block">
+                    {totalCustomersCount}
+                  </span>
+                  <span className="text-[11px] font-bold text-blue-900 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'कुल पंजीकृत ग्राहक आईडी' : 'TOTAL CUSTOMER IDS'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? 'ऐप में पंजीकृत अद्वितीय खाते' : 'Registered customer accounts'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Card 2: Customers Logged In ID */}
+              <div className="bg-white p-4 rounded-3xl border border-emerald-200/90 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+                    <UserCheck className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                    {totalCustomersCount > 0 ? `${Math.round((totalCustomersLoggedInCount / totalCustomersCount) * 100)}% Logged In` : 'Active'}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-emerald-600 leading-none block">
+                    {totalCustomersLoggedInCount}
+                  </span>
+                  <span className="text-[11px] font-bold text-emerald-900 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'आईडी लॉगिन किए ग्राहक' : 'CUSTOMERS LOGGED IN ID'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? 'सफल लॉगिन संख्या ≥ 1 बार' : 'Logged in ≥ 1 time'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Card 3: Never Logged In */}
+              <div className="bg-white p-4 rounded-3xl border border-amber-200/90 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold">
+                    <Clock className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                    {isHindi ? 'लॉगिन शेष' : 'Pending Login'}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-amber-600 leading-none block">
+                    {Math.max(0, totalCustomersCount - totalCustomersLoggedInCount)}
+                  </span>
+                  <span className="text-[11px] font-bold text-amber-900 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'लॉगिन नहीं किया' : 'NEVER LOGGED IN'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? 'खाता पंजीकृत है परंतु लॉगिन नहीं' : 'Account created, no login yet'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Card 4: Total Bookings */}
+              <div className="bg-white p-4 rounded-3xl border border-purple-200/90 shadow-2xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center font-bold">
+                    <CalendarCheck className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full">
+                    {isHindi ? 'बुकिंग्स' : 'Bookings'}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-purple-600 leading-none block">
+                    {stats.totalBookings}
+                  </span>
+                  <span className="text-[11px] font-bold text-purple-900 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'कुल ग्राहक बुकिंग्स' : 'DOORSTEP BOOKINGS'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? 'सत्यापित एवं MNP अनुरोध' : 'Doorstep porting leads'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Filter and Search Bar */}
+            <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center justify-between bg-white p-4 rounded-3xl border border-slate-200 shadow-xs">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="text"
+                  value={customerSearchQuery}
+                  onChange={(e) => setCustomerSearchQuery(e.target.value)}
+                  placeholder={isHindi ? 'ग्राहक का नाम, मोबाइल नंबर, ईमेल या UID खोजें...' : 'Search by name, mobile number, email, or UID...'}
+                  className="w-full pl-10 pr-4 py-2.5 text-xs bg-slate-50 border border-slate-200 rounded-2xl focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex gap-1.5 bg-slate-100 p-1 rounded-2xl shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setCustomerLoginFilter('ALL')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                    customerLoginFilter === 'ALL'
+                      ? 'bg-white shadow-2xs text-slate-900'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {isHindi ? 'सभी ग्राहक' : 'All'} ({customerUsersList.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomerLoginFilter('LOGGED_IN')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                    customerLoginFilter === 'LOGGED_IN'
+                      ? 'bg-white shadow-2xs text-emerald-700 font-extrabold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {isHindi ? 'लॉगिन किए ग्राहक' : 'Logged In'} ({totalCustomersLoggedInCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCustomerLoginFilter('NOT_LOGGED_IN')}
+                  className={`px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer ${
+                    customerLoginFilter === 'NOT_LOGGED_IN'
+                      ? 'bg-white shadow-2xs text-amber-700 font-extrabold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {isHindi ? 'लॉगिन नहीं किए' : 'Never'} ({Math.max(0, totalCustomersCount - totalCustomersLoggedInCount)})
+                </button>
+              </div>
+            </div>
+
+            {/* Customers Table */}
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden">
+              {filteredCustomerUsers.length === 0 ? (
+                <div className="p-10 text-center text-slate-500 text-xs">
+                  <Users className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                  <p className="font-bold text-slate-700 text-sm">
+                    {isHindi ? 'कोई ग्राहक रिकॉर्ड नहीं मिला' : 'No customer records found'}
+                  </p>
+                  <p className="text-slate-400 mt-1">
+                    {customerSearchQuery 
+                      ? (isHindi ? 'खोज शब्द बदलकर प्रयास करें' : 'Try searching with a different keyword')
+                      : (isHindi ? 'जैसे ही ग्राहक ऐप में खाता बनाएंगे, वे यहाँ दिखाई देंगे।' : 'Registered customers will appear here.')}
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-50 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                      <tr>
+                        <th className="py-3 px-4">{isHindi ? 'ग्राहक का नाम' : 'Customer Name'}</th>
+                        <th className="py-3 px-3">{isHindi ? 'मोबाइल नंबर' : 'Mobile Number'}</th>
+                        <th className="py-3 px-3">{isHindi ? 'लॉगिन आईडी / ईमेल' : 'Login ID / Email'}</th>
+                        <th className="py-3 px-3">{isHindi ? 'पंजीकरण दिनांक' : 'Registration Date'}</th>
+                        <th className="py-3 px-3">{isHindi ? 'अंतिम लॉगिन' : 'Last Login'}</th>
+                        <th className="py-3 px-3 text-center">{isHindi ? 'लॉगिन संख्या' : 'Login Count'}</th>
+                        <th className="py-3 px-3 text-center">{isHindi ? 'स्थिति' : 'Status'}</th>
+                        <th className="py-3 px-3 text-center">{isHindi ? 'बुकिंग्स' : 'Bookings'}</th>
+                        <th className="py-3 px-4 text-right">
+                          {isHindi ? 'कार्रवाई (Owner Delete)' : 'Actions'}
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredCustomerUsers.map((cust) => {
+                        const cleanPhone = (cust.phone || cust.phoneNumber || '').replace(/\D/g, '').slice(-10);
+                        const userLeads = leads.filter(
+                          (l) => l.customerUid === cust.uid || (cleanPhone && (l.mobileNumber || '').replace(/\D/g, '').slice(-10) === cleanPhone)
+                        );
+                        const regDateStr = cust.createdAt
+                          ? new Date(cust.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+                          : '-';
+                        const lastLoginStr = cust.lastLoginAt
+                          ? new Date(cust.lastLoginAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                          : (cust.hasLoggedIn ? 'Logged in' : 'Never');
+                        const loginNum = cust.loginCount ?? (cust.hasLoggedIn || cust.lastLoginAt ? 1 : 0);
+                        const isActuallyLoggedIn = cust.hasLoggedIn || loginNum > 0 || Boolean(cust.lastLoginAt);
+
+                        return (
+                          <tr key={cust.uid} className="hover:bg-slate-50/80 transition-colors">
+                            {/* Customer Name */}
+                            <td className="py-3.5 px-4">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-red-500 to-amber-500 text-white font-black text-xs flex items-center justify-center shrink-0 shadow-2xs">
+                                  {(cust.displayName || cust.email || 'C').charAt(0).toUpperCase()}
+                                </div>
+                                <div>
+                                  <span className="font-extrabold text-slate-900 block truncate max-w-[150px]">
+                                    {cust.displayName || cust.email?.split('@')[0] || 'Customer'}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono block">
+                                    UID: {cust.uid.slice(0, 8)}...
+                                  </span>
+                                </div>
+                              </div>
+                            </td>
+
+                            {/* Mobile Number with Call & WhatsApp */}
+                            <td className="py-3.5 px-3 whitespace-nowrap">
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono font-bold text-slate-800">
+                                  {cleanPhone ? `+91 ${cleanPhone}` : '-'}
+                                </span>
+                                {cleanPhone && (
+                                  <div className="flex items-center gap-1">
+                                    <a
+                                      href={`tel:${cleanPhone}`}
+                                      className="p-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 transition-colors"
+                                      title={isHindi ? "कॉल करें" : "Call Customer"}
+                                    >
+                                      <Phone className="w-3 h-3" />
+                                    </a>
+                                    <a
+                                      href={`https://wa.me/91${cleanPhone}?text=${encodeURIComponent(`Hello ${cust.displayName || 'Customer'}, Vi Doorstep MNP update.`)}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="p-1 rounded-lg bg-green-50 hover:bg-green-100 text-green-700 border border-green-200 transition-colors"
+                                      title="WhatsApp"
+                                    >
+                                      <MessageCircle className="w-3 h-3" />
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
+                            </td>
+
+                            {/* Login ID / Email */}
+                            <td className="py-3.5 px-3 font-mono text-[11px] text-slate-600 truncate max-w-[170px]" title={cust.email || cust.uid}>
+                              {cust.email || cust.phoneNumber || cust.uid}
+                            </td>
+
+                            {/* Registration Date */}
+                            <td className="py-3.5 px-3 whitespace-nowrap text-[11px] text-slate-600">
+                              {regDateStr}
+                            </td>
+
+                            {/* Last Login */}
+                            <td className="py-3.5 px-3 whitespace-nowrap">
+                              <span className={`text-[11px] font-semibold ${isActuallyLoggedIn ? 'text-slate-800' : 'text-slate-400'}`}>
+                                {lastLoginStr}
+                              </span>
+                            </td>
+
+                            {/* Login Count */}
+                            <td className="py-3.5 px-3 text-center whitespace-nowrap">
+                              <span className={`inline-flex items-center justify-center min-w-[28px] px-2 py-0.5 rounded-full text-[11px] font-black ${
+                                loginNum > 0
+                                  ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                  : 'bg-slate-100 text-slate-400'
+                              }`}>
+                                {loginNum} {isHindi ? 'बार' : 'times'}
+                              </span>
+                            </td>
+
+                            {/* Login Status */}
+                            <td className="py-3.5 px-3 text-center whitespace-nowrap">
+                              {isActuallyLoggedIn ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
+                                  <span>{isHindi ? 'लॉगिन किया' : 'Logged In'}</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500">
+                                  {isHindi ? 'लॉगिन शेष' : 'No Login'}
+                                </span>
+                              )}
+                            </td>
+
+                            {/* Leads / Bookings */}
+                            <td className="py-3.5 px-3 text-center whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (cleanPhone) setSearchQuery(cleanPhone);
+                                  setActiveSection('bookings');
+                                }}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-slate-100 hover:bg-red-50 text-slate-700 hover:text-red-700 border border-slate-200 transition-all cursor-pointer"
+                                title={isHindi ? "बुकिंग्स देखें" : "View Bookings"}
+                              >
+                                <span>{userLeads.length}</span>
+                                <ArrowUpRight className="w-3 h-3" />
+                              </button>
+                            </td>
+
+                            {/* Actions Column: OWNER DELETE vs ADMIN READ-ONLY */}
+                            <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                              {isPrimaryOwner ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setCustomerToDelete(cust)}
+                                  className="px-3 py-1.5 rounded-xl text-xs font-bold bg-red-50 hover:bg-red-600 hover:text-white text-red-700 border border-red-200 transition-all inline-flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                                  title={isHindi ? "ग्राहक आईडी डिलीट करें (केवल Primary Owner)" : "Delete Customer ID (Owner Only)"}
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>{isHindi ? 'आईडी डिलीट' : 'Delete ID'}</span>
+                                </button>
+                              ) : (
+                                <span
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
+                                  title={isHindi ? "केवल Primary Owner ही ग्राहक आईडी डिलीट कर सकते हैं" : "Only Primary Owner can delete customer IDs"}
+                                >
+                                  <Lock className="w-3 h-3 text-slate-400" />
+                                  <span>{isHindi ? 'Owner Only' : 'Owner Only'}</span>
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1494,142 +2001,245 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* ======================================================== */}
         {activeSection === 'admin-help' && (
           <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs max-w-2xl space-y-6">
-            <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
-              <PhoneCall className="w-5 h-5 text-red-600" />
-              <div>
-                <h3 className="font-extrabold text-base text-slate-900">Admin Help Numbers & Support Details</h3>
-                <p className="text-xs text-slate-500">Manage the direct phone and WhatsApp numbers customers use to call or chat with the delivery agent.</p>
-              </div>
-            </div>
-
-            {/* Live Contact Card Preview */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-slate-500 block">Live Preview on Customer Portal:</label>
-              <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <span className="text-xs font-bold text-red-700 uppercase tracking-wider block">
-                    {portalConfig.adminHelp.supportTitle || 'VI Porting / Home Service Contact'}
-                  </span>
-                  <div className="text-xl font-black text-red-950 flex items-center gap-2 mt-0.5">
-                    <PhoneCall className="w-5 h-5 text-red-600" />
-                    <span>{portalConfig.adminHelp.callNumber || '9175601497'}</span>
-                  </div>
-                  <div className="text-xs font-bold text-emerald-700 flex items-center gap-1.5 mt-0.5">
-                    <MessageCircle className="w-3.5 h-3.5" />
-                    <span>Admin WhatsApp: {portalConfig.adminHelp.whatsappNumber || '9175601497'}</span>
+            {!isPrimaryOwner ? (
+              <div className="space-y-5">
+                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <ShieldCheck className="w-5 h-5 text-red-600" />
+                  <div>
+                    <h3 className="font-extrabold text-base text-slate-900">
+                      {isHindi ? 'आपकी एडमिन प्रोफाइल एवं निर्धारित क्षेत्र' : 'Admin Profile & Assigned Territory'}
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      {isHindi ? 'Primary Owner द्वारा अधिकृत विवरण एवं अनुमति दायरा' : 'Authorized credentials and territory bounds defined by Primary Owner'}
+                    </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <a
-                    href={`tel:${portalConfig.adminHelp.callNumber || '9175601497'}`}
-                    className="bg-emerald-600 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5"
-                  >
-                    <PhoneCall className="w-3.5 h-3.5" />
-                    <span>Call Now</span>
-                  </a>
-                  <a
-                    href={`https://wa.me/91${(portalConfig.adminHelp.whatsappNumber || '9175601497').replace(/\D/g, '').slice(-10)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="bg-green-600 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5"
-                  >
-                    <MessageCircle className="w-3.5 h-3.5" />
-                    <span>WhatsApp</span>
-                  </a>
-                </div>
-              </div>
-            </div>
+                {/* Territory Profile Card */}
+                <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                    <div>
+                      <span className="text-slate-400 block font-medium">{isHindi ? 'एडमिन का नाम' : 'Display Name'}</span>
+                      <span className="font-black text-slate-900 text-sm">{userProfile?.displayName || user?.displayName || 'Admin'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block font-medium">{isHindi ? 'लॉगिन ID / ईमेल' : 'Login ID / Email'}</span>
+                      <span className="font-mono font-bold text-slate-900">{user?.email}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block font-medium">{isHindi ? 'सिस्टम भूमिका' : 'Assigned Role'}</span>
+                      <span className="font-extrabold text-red-700 bg-red-100 px-2 py-0.5 rounded-md w-fit inline-block">
+                        Administrator
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block font-medium">{isHindi ? 'अनुमति स्थिति' : 'Status'}</span>
+                      <span className="font-extrabold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md w-fit inline-block">
+                        Active & Approved
+                      </span>
+                    </div>
+                  </div>
 
-            {/* Edit Numbers Form */}
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                await handleSaveAllPortalConfig({ adminHelp: portalConfig.adminHelp });
-              }}
-              className="space-y-4 pt-2"
-            >
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Admin Call Number</label>
-                  <div className="relative">
-                    <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                    <input
-                      type="tel"
-                      required
-                      value={portalConfig.adminHelp.callNumber}
-                      onChange={(e) =>
-                        setPortalConfig({
-                          ...portalConfig,
-                          adminHelp: { ...portalConfig.adminHelp, callNumber: e.target.value }
-                        })
-                      }
-                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold font-mono focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
-                    />
+                  <div className="pt-3 border-t border-slate-200">
+                    <span className="text-xs font-black text-slate-900 flex items-center gap-1.5 mb-2">
+                      <MapPin className="w-4 h-4 text-red-600" />
+                      <span>{isHindi ? 'Owner द्वारा निर्धारित क्षेत्रीय दायरा (Territory Bounds)' : 'Owner-Assigned Territory Scope'}</span>
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                      <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                        <span className="text-[10px] text-slate-400 block font-medium">{isHindi ? 'राज्य' : 'State'}</span>
+                        <span className="font-bold text-slate-800">{userProfile?.assignedState || 'Maharashtra'}</span>
+                      </div>
+                      <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                        <span className="text-[10px] text-slate-400 block font-medium">{isHindi ? 'जिला' : 'District'}</span>
+                        <span className="font-bold text-slate-800">{userProfile?.assignedDistrict || 'Buldhana'}</span>
+                      </div>
+                      <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                        <span className="text-[10px] text-slate-400 block font-medium">{isHindi ? 'तालुका / तहसील' : 'Taluka'}</span>
+                        <span className="font-bold text-slate-800">{userProfile?.assignedTaluka || 'Mehkar'}</span>
+                      </div>
+                      <div className="bg-white p-2.5 rounded-xl border border-red-300 bg-red-50/50">
+                        <span className="text-[10px] text-red-700 block font-black">{isHindi ? 'निर्धारित गाँव' : 'Village'}</span>
+                        <span className="font-black text-red-900">{userProfile?.assignedVillage || 'Mehkar City'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Security Notice */}
+                  <div className="bg-amber-50 rounded-xl p-3 border border-amber-200 text-amber-900 text-xs flex items-start gap-2">
+                    <Lock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block">
+                        {isHindi ? 'सुरक्षा एवं गोपनीयता नियम' : 'Security Policy Enforced'}
+                      </span>
+                      <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                        {isHindi
+                          ? 'Admin अपनी भूमिका (Role) या आवंटित गाँव (Village) खुद नहीं बदल सकते और दूसरे गाँव का डेटा नहीं देख सकते। केवल Primary Owner Admin ही आपका गाँव या भूमिका निर्धारित कर सकते हैं।'
+                          : 'Admins cannot alter their role or assigned village, and cannot access data of other villages. Only the Primary Owner can reassign your territory.'}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Admin WhatsApp Number</label>
-                  <div className="relative">
-                    <MessageCircle className="w-4 h-4 text-emerald-600 absolute left-3 top-2.5" />
-                    <input
-                      type="tel"
-                      required
-                      value={portalConfig.adminHelp.whatsappNumber}
-                      onChange={(e) =>
-                        setPortalConfig({
-                          ...portalConfig,
-                          adminHelp: { ...portalConfig.adminHelp, whatsappNumber: e.target.value }
-                        })
-                      }
-                      className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold font-mono focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
-                    />
+                {/* Support Contact */}
+                <div className="pt-2">
+                  <span className="text-xs font-bold text-slate-500 block mb-1.5">{isHindi ? 'मुख्य संपर्क नंबर:' : 'Owner Support Contact:'}</span>
+                  <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-slate-800 text-xs">Primary Owner Support</div>
+                      <div className="font-mono font-bold text-slate-900 text-sm mt-0.5">
+                        +91 {portalConfig.adminHelp.callNumber || '9175601497'}
+                      </div>
+                    </div>
+                    <a
+                      href={`tel:${portalConfig.adminHelp.callNumber || '9175601497'}`}
+                      className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold"
+                    >
+                      Call Owner
+                    </a>
                   </div>
                 </div>
               </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
+                  <PhoneCall className="w-5 h-5 text-red-600" />
+                  <div>
+                    <h3 className="font-extrabold text-base text-slate-900">Admin Help Numbers & Support Details</h3>
+                    <p className="text-xs text-slate-500">Manage the direct phone and WhatsApp numbers customers use to call or chat with the delivery agent.</p>
+                  </div>
+                </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Support Title / Heading</label>
-                <input
-                  type="text"
-                  value={portalConfig.adminHelp.supportTitle}
-                  onChange={(e) =>
-                    setPortalConfig({
-                      ...portalConfig,
-                      adminHelp: { ...portalConfig.adminHelp, supportTitle: e.target.value }
-                    })
-                  }
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
-                />
-              </div>
+                {/* Live Contact Card Preview */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-500 block">Live Preview on Customer Portal:</label>
+                  <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <span className="text-xs font-bold text-red-700 uppercase tracking-wider block">
+                        {portalConfig.adminHelp.supportTitle || 'VI Porting / Home Service Contact'}
+                      </span>
+                      <div className="text-xl font-black text-red-950 flex items-center gap-2 mt-0.5">
+                        <PhoneCall className="w-5 h-5 text-red-600" />
+                        <span>{portalConfig.adminHelp.callNumber || '9175601497'}</span>
+                      </div>
+                      <div className="text-xs font-bold text-emerald-700 flex items-center gap-1.5 mt-0.5">
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>Admin WhatsApp: {portalConfig.adminHelp.whatsappNumber || '9175601497'}</span>
+                      </div>
+                    </div>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Fixed Service Area Notice</label>
-                <input
-                  type="text"
-                  value={portalConfig.adminHelp.fixedServiceArea}
-                  onChange={(e) =>
-                    setPortalConfig({
-                      ...portalConfig,
-                      adminHelp: { ...portalConfig.adminHelp, fixedServiceArea: e.target.value }
-                    })
-                  }
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-medium focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
-                />
-              </div>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={`tel:${portalConfig.adminHelp.callNumber || '9175601497'}`}
+                        className="bg-emerald-600 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5"
+                      >
+                        <PhoneCall className="w-3.5 h-3.5" />
+                        <span>Call Now</span>
+                      </a>
+                      <a
+                        href={`https://wa.me/91${(portalConfig.adminHelp.whatsappNumber || '9175601497').replace(/\D/g, '').slice(-10)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="bg-green-600 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>WhatsApp</span>
+                      </a>
+                    </div>
+                  </div>
+                </div>
 
-              <div className="pt-2">
-                <button
-                  type="submit"
-                  disabled={isSavingConfig}
-                  className="px-6 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-md flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                {/* Edit Numbers Form */}
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    await handleSaveAllPortalConfig({ adminHelp: portalConfig.adminHelp });
+                  }}
+                  className="space-y-4 pt-2"
                 >
-                  <Save className="w-4 h-4" />
-                  <span>{isSavingConfig ? 'Saving...' : 'Save & Update Help Numbers'}</span>
-                </button>
-              </div>
-            </form>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Admin Call Number</label>
+                      <div className="relative">
+                        <Phone className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                        <input
+                          type="tel"
+                          required
+                          value={portalConfig.adminHelp.callNumber}
+                          onChange={(e) =>
+                            setPortalConfig({
+                              ...portalConfig,
+                              adminHelp: { ...portalConfig.adminHelp, callNumber: e.target.value }
+                            })
+                          }
+                          className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold font-mono focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 mb-1">Admin WhatsApp Number</label>
+                      <div className="relative">
+                        <MessageCircle className="w-4 h-4 text-emerald-600 absolute left-3 top-2.5" />
+                        <input
+                          type="tel"
+                          required
+                          value={portalConfig.adminHelp.whatsappNumber}
+                          onChange={(e) =>
+                            setPortalConfig({
+                              ...portalConfig,
+                              adminHelp: { ...portalConfig.adminHelp, whatsappNumber: e.target.value }
+                            })
+                          }
+                          className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold font-mono focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Support Title / Heading</label>
+                    <input
+                      type="text"
+                      value={portalConfig.adminHelp.supportTitle}
+                      onChange={(e) =>
+                        setPortalConfig({
+                          ...portalConfig,
+                          adminHelp: { ...portalConfig.adminHelp, supportTitle: e.target.value }
+                        })
+                      }
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">Fixed Service Area Notice</label>
+                    <input
+                      type="text"
+                      value={portalConfig.adminHelp.fixedServiceArea}
+                      onChange={(e) =>
+                        setPortalConfig({
+                          ...portalConfig,
+                          adminHelp: { ...portalConfig.adminHelp, fixedServiceArea: e.target.value }
+                        })
+                      }
+                      className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-medium focus:bg-white focus:ring-2 focus:ring-red-500 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      type="submit"
+                      disabled={isSavingConfig}
+                      className="px-6 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-md flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                    >
+                      <Save className="w-4 h-4" />
+                      <span>{isSavingConfig ? 'Saving...' : 'Save & Update Help Numbers'}</span>
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </div>
         )}
 
@@ -1725,6 +2335,432 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ======================================================== */}
+        {/* TERRITORY & ADMIN ASSIGNMENT SECTION (VILLAGE & CITY)    */}
+        {/* ======================================================== */}
+        {activeSection === 'territories' && (
+          <div className="space-y-6">
+            {/* Header & Quick Action Banner */}
+            <div className="bg-gradient-to-r from-red-600 via-rose-700 to-red-900 rounded-3xl p-6 text-white shadow-md flex flex-wrap items-center justify-between gap-4">
+              <div className="space-y-1 max-w-2xl">
+                <div className="flex items-center gap-2">
+                  <span className="p-2 bg-white/20 rounded-xl backdrop-blur-xs">
+                    <Building2 className="w-5 h-5 text-white" />
+                  </span>
+                  <span className="text-xs font-black uppercase tracking-wider bg-white/20 px-2.5 py-0.5 rounded-full">
+                    {isHindi ? 'सुपर एडमिन नियंत्रण' : 'Super Admin Territory Control'}
+                  </span>
+                </div>
+                <h3 className="text-xl font-black tracking-tight">
+                  {isHindi ? 'गाँव-वार और शहर-वार एडमिन आवंटन सिस्टम' : 'Village & City Admin Assignment System'}
+                </h3>
+                <p className="text-xs text-red-100 leading-relaxed font-medium">
+                  {isHindi
+                    ? 'सुपर एडमिन किसी भी एडमिन को State, District, Taluka/City और Village असाइन कर सकते हैं। एक गाँव में कई एडमिन की अनुमति है। कस्टमर बुकिंग सीधे संबंधित गाँव के एडमिन को प्राप्त होती है।'
+                    : 'Super Admin can assign any Admin State, District, Taluka/City, and Village. Multiple Admins per village are fully supported. Customer bookings route automatically to the assigned village Admin.'}
+                </p>
+              </div>
+
+              {/* Action Button */}
+              {isPrimaryOwner && (
+                <button
+                  type="button"
+                  onClick={() => setIsAddAdminModalOpen(true)}
+                  className="px-5 py-3 rounded-2xl bg-white text-red-700 hover:bg-red-50 font-black text-xs shadow-lg flex items-center gap-2 cursor-pointer transition-all active:scale-95"
+                >
+                  <Plus className="w-4 h-4 text-red-600" />
+                  <span>{isHindi ? '➕ नया एडमिन जोड़ें और गाँव सौंपें' : '➕ Add Admin & Assign Village'}</span>
+                </button>
+              )}
+            </div>
+
+            {/* Quick Metrics Bar */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                <div className="text-[11px] font-bold text-slate-500">{isHindi ? 'सक्रिय एडमिन' : 'Active Admins'}</div>
+                <div className="text-2xl font-black text-slate-900">
+                  {allAdminsList.filter((u) => u.role === 'admin' && !u.isDeactivated).length}
+                </div>
+                <div className="text-[10px] text-emerald-600 font-bold flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> {isHindi ? 'सत्यापित और अधिकृत' : 'Verified & authorized'}
+                </div>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                <div className="text-[11px] font-bold text-slate-500">{isHindi ? 'मेहकर/बुलढाणा गाँव' : 'Covered Villages'}</div>
+                <div className="text-2xl font-black text-red-600">
+                  {availableVillageOptions.length}
+                </div>
+                <div className="text-[10px] text-slate-500 font-bold">
+                  {isHindi ? 'डोरस्टेप सिम डिलीवरी' : 'Doorstep SIM coverage'}
+                </div>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                <div className="text-[11px] font-bold text-slate-500">{isHindi ? 'कुल ग्राहक बुकिंग्स' : 'Total Bookings'}</div>
+                <div className="text-2xl font-black text-slate-900">
+                  {leads.length}
+                </div>
+                <div className="text-[10px] text-purple-600 font-bold flex items-center gap-1">
+                  <Radio className="w-3 h-3" /> {isHindi ? 'लाइव सिंक चालू' : 'Real-time live sync'}
+                </div>
+              </div>
+
+              <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs space-y-1">
+                <div className="text-[11px] font-bold text-slate-500">{isHindi ? 'सुपर एडमिन' : 'Super Admin'}</div>
+                <div className="text-xs font-black text-slate-900 truncate">
+                  raheema62038@gmail.com
+                </div>
+                <div className="text-[10px] text-amber-700 font-bold flex items-center gap-1">
+                  <Crown className="w-3 h-3 text-amber-500" /> {isHindi ? 'अखिल भारतीय पूर्ण अधिकार' : 'All-India Full Access'}
+                </div>
+              </div>
+            </div>
+
+            {/* Owner Multi-Admin Allocation Rule Card */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div className="space-y-0.5">
+                  <h4 className="font-black text-base text-slate-900 flex items-center gap-2">
+                    <Users className="w-5 h-5 text-red-600" />
+                    <span>{isHindi ? 'एक गाँव में कई Admin होने पर बुकिंग वितरण नियम (Owner Setting)' : 'Multi-Admin Booking Allocation Rule (Owner Setting)'}</span>
+                  </h4>
+                  <p className="text-xs text-slate-500">
+                    {isHindi
+                      ? 'जब किसी गाँव में 1 से अधिक Admin असाइन हों, तो नए ग्राहक की बुकिंग किस प्रकार दिखाई दे / प्राप्त हो:'
+                      : 'When multiple Admins are assigned to the same village, configure how incoming bookings are routed:'}
+                  </p>
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-wider bg-red-100 text-red-800 border border-red-200 px-2.5 py-1 rounded-full">
+                  {isHindi ? 'Owner द्वारा निर्धारित' : 'Owner Controlled'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {[
+                  {
+                    mode: 'shared_pool' as const,
+                    title: isHindi ? '1. सभी को दिखे (Shared Pool)' : '1. Shared Pool (All Admins)',
+                    desc: isHindi
+                      ? 'गाँव के सभी असाइन किए गए Admins को उस गाँव की हर नई बुकिंग दिखाई देगी और कोई भी प्रोसेस कर सकेगा।'
+                      : 'All Admins assigned to this village see every booking and can service the customer.',
+                    badge: isHindi ? 'डिफ़ॉल्ट नियम' : 'Default Rule',
+                  },
+                  {
+                    mode: 'round_robin' as const,
+                    title: isHindi ? '2. रोटेशन बारी-बारी (Round Robin)' : '2. Round Robin (Equal Rotation)',
+                    desc: isHindi
+                      ? 'नई बुकिंग्स गाँव के Admins के बीच बारी-बारी रोटेशन में बँटेंगी ताकि सभी को समान बुकिंग मिले।'
+                      : 'Incoming customer bookings rotate turn-by-turn equally among active Admins in that village.',
+                    badge: isHindi ? 'समान वितरण' : 'Equal Sharing',
+                  },
+                  {
+                    mode: 'primary_admin' as const,
+                    title: isHindi ? '3. मुख्य एडमिन (Primary Admin)' : '3. Primary Admin First',
+                    desc: isHindi
+                      ? 'बुकिंग पहले असाइन किए गए मुख्य Admin को दी जाएगी। बैकअप एडमिन आवश्यकतानुसार सहयोग करेंगे।'
+                      : 'Bookings route primarily to the first/primary Admin assigned to that village.',
+                    badge: isHindi ? 'मुख्य प्रभारी' : 'Lead Admin',
+                  },
+                ].map((rule) => {
+                  const isSelected = (portalConfig.territoryRules?.multiAdminMode || 'shared_pool') === rule.mode;
+                  return (
+                    <button
+                      key={rule.mode}
+                      type="button"
+                      disabled={!isPrimaryOwner || isSavingConfig}
+                      onClick={async () => {
+                        if (!isPrimaryOwner) return;
+                        const updatedRules = {
+                          multiAdminMode: rule.mode,
+                          updatedAt: new Date().toISOString(),
+                          updatedBy: user?.email || user?.uid,
+                        };
+                        setPortalConfig({ ...portalConfig, territoryRules: updatedRules });
+                        await handleSaveAllPortalConfig({ territoryRules: updatedRules });
+                      }}
+                      className={`text-left p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between space-y-2 ${
+                        isSelected
+                          ? 'bg-red-50 border-red-500 ring-2 ring-red-500 shadow-xs'
+                          : 'bg-slate-50/70 border-slate-200 hover:border-slate-300 hover:bg-white'
+                      }`}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className={`font-black text-xs ${isSelected ? 'text-red-900' : 'text-slate-900'}`}>
+                            {rule.title}
+                          </span>
+                          <span className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full ${
+                            isSelected ? 'bg-red-600 text-white' : 'bg-slate-200 text-slate-700'
+                          }`}>
+                            {isSelected ? (isHindi ? '✓ सक्रिय' : '✓ Active') : rule.badge}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 leading-relaxed font-medium">
+                          {rule.desc}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Admin Users Directory with Territory Assignments */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                <div>
+                  <h4 className="font-black text-base text-slate-900 flex items-center gap-2">
+                    <Users className="w-5 h-5 text-red-600" />
+                    <span>{isHindi ? 'अधिकृत एडमिन और उनका आवंटित क्षेत्र' : 'Authorized Admins & Territory Scopes'}</span>
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {isHindi
+                      ? 'प्रत्येक एडमिन केवल अपने आवंटित गाँव/शहर का डेटा देख और अपडेट कर सकता है। दूसरे क्षेत्रों का डेटा पूरी तरह सुरक्षित है।'
+                      : 'Each Admin can strictly view and update bookings in their assigned village/territory. Other territories are protected by Backend API and Firestore Security Rules.'}
+                  </p>
+                </div>
+
+                <div className="text-xs font-bold bg-slate-100 text-slate-700 px-3 py-1.5 rounded-xl border border-slate-200">
+                  {allAdminsList.filter((u) => u.role === 'admin').length} {isHindi ? 'एडमिन पंजीकृत' : 'Admins registered'}
+                </div>
+              </div>
+
+              {/* Admins Cards / Table */}
+              <div className="space-y-3">
+                {allAdminsList
+                  .filter((u) => u.role === 'admin' || u.role === 'owner')
+                  .map((admin) => {
+                    const isOwner = Boolean(
+                      admin.role === 'owner' ||
+                      admin.isPrimaryOwner ||
+                      (admin.email && isEmailPrimaryOwner(admin.email))
+                    );
+                    const territories = admin.assignedTerritories || [];
+                    const hasTerritories = territories.length > 0 || Boolean(admin.assignedVillage);
+
+                    return (
+                      <div
+                        key={admin.uid}
+                        className={`rounded-2xl p-4 border transition-all flex flex-col md:flex-row md:items-center justify-between gap-4 ${
+                          isOwner
+                            ? 'bg-amber-50/60 border-amber-200'
+                            : admin.isDeactivated
+                            ? 'bg-slate-50 border-slate-200 opacity-60'
+                            : 'bg-white border-slate-200 hover:border-red-300 hover:shadow-xs'
+                        }`}
+                      >
+                        {/* Admin Info */}
+                        <div className="space-y-1.5 max-w-md">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-black text-slate-900 text-sm">
+                              {admin.displayName || (admin as any).name || 'Admin User'}
+                            </span>
+                            {isOwner ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-200 text-amber-900 border border-amber-300 flex items-center gap-1">
+                                <Crown className="w-3 h-3 text-amber-600" />
+                                {isHindi ? 'सुपर एडमिन (सभी क्षेत्र)' : 'Super Owner (All India)'}
+                              </span>
+                            ) : admin.isDeactivated ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                                {isHindi ? 'निष्क्रिय' : 'Deactivated'}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                                {isHindi ? 'सक्रिय एडमिन' : 'Active Admin'}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 text-xs text-slate-600 flex-wrap">
+                            <span className="font-mono text-slate-700">{admin.email}</span>
+                            {(admin.phoneNumber || admin.phone) && (
+                              <span className="font-mono font-bold text-slate-800">
+                                +91 {(admin.phoneNumber || admin.phone || '').replace(/\D/g, '').slice(-10)}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Assigned Territory Badges */}
+                          <div className="pt-1 flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[11px] font-bold text-slate-500 flex items-center gap-1">
+                              <MapPin className="w-3.5 h-3.5 text-red-600" />
+                              {isHindi ? 'आवंटित क्षेत्र:' : 'Assigned Territory:'}
+                            </span>
+                            {isOwner ? (
+                              <span className="text-[10px] font-black bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full border border-amber-200">
+                                🌐 {isHindi ? 'संपूर्ण भारत (अनपेक्षित पहुँच)' : 'All India / Universal Access'}
+                              </span>
+                            ) : hasTerritories ? (
+                              <>
+                                {territories.map((t) => (
+                                  <span
+                                    key={t.id}
+                                    className="text-[10px] font-extrabold bg-red-100 text-red-800 px-2.5 py-0.5 rounded-full border border-red-200 flex items-center gap-1"
+                                  >
+                                    🏡 {t.village || t.taluka} ({t.district || 'Buldhana'})
+                                  </span>
+                                ))}
+                                {admin.assignedVillage && !territories.some((t) => t.village === admin.assignedVillage) && (
+                                  <span className="text-[10px] font-extrabold bg-red-100 text-red-800 px-2.5 py-0.5 rounded-full border border-red-200">
+                                    🏡 {admin.assignedVillage} ({admin.assignedTaluka || 'Mehkar'})
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full border border-slate-200">
+                                {isHindi ? '⚠️ कोई विशिष्ट गाँव असाइन नहीं (नीचे क्लिक करें)' : '⚠️ No village assigned (Click to assign)'}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Assign Territory Action */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isPrimaryOwner && !isOwner && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedAdminForTerritory(admin);
+                                setIsTerritoryModalOpen(true);
+                              }}
+                              className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs shadow-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                            >
+                              <MapPin className="w-3.5 h-3.5" />
+                              <span>{isHindi ? '📍 गाँव/क्षेत्र असाइन करें' : '📍 Assign / Edit Village'}</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+
+            {/* Village Explorer with Multi-Admin Highlight */}
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                <div>
+                  <h4 className="font-black text-base text-slate-900 flex items-center gap-2">
+                    <Building2 className="w-5 h-5 text-purple-600" />
+                    <span>{isHindi ? 'मेहकर तहसील - गाँव डायरेक्टरी एवं मल्टी-एडमिन स्थिति' : 'Mehkar Taluka - Village Directory & Multi-Admin Coverage'}</span>
+                  </h4>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {isHindi
+                      ? 'एक गाँव में कई एडमिन काम कर सकते हैं। प्रत्येक गाँव की बुकिंग उसी गाँव के सभी असाइन किए गए एडमिन को दिखाई देगी।'
+                      : 'Multiple Admins can be assigned to the same village. Bookings in that village are automatically delivered to all assigned Admins.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Village Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {getAvailableVillages('Maharashtra', 'Buldhana', 'Mehkar').map((villageName) => {
+                  const normV = villageName.toLowerCase().replace(/[^a-z0-9]/g, '');
+                  
+                  // Find all admins assigned to this village
+                  const assignedAdmins = allAdminsList.filter((admin) => {
+                    if (admin.role !== 'admin' || admin.isDeactivated) return false;
+                    if (Array.isArray(admin.assignedTerritories)) {
+                      const matchInArray = admin.assignedTerritories.some(
+                        (t) => t.village && t.village.toLowerCase().replace(/[^a-z0-9]/g, '') === normV
+                      );
+                      if (matchInArray) return true;
+                    }
+                    if (admin.assignedVillage && admin.assignedVillage.toLowerCase().replace(/[^a-z0-9]/g, '') === normV) {
+                      return true;
+                    }
+                    return false;
+                  });
+
+                  // Count bookings in this village
+                  const villageBookings = leads.filter((l) => {
+                    const lv = (l.village || l.address || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return lv.includes(normV) || normV.includes(lv);
+                  });
+
+                  return (
+                    <div
+                      key={villageName}
+                      className="bg-slate-50/80 rounded-2xl p-3.5 border border-slate-200 hover:border-purple-300 hover:bg-white transition-all space-y-2 flex flex-col justify-between"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <h5 className="font-black text-slate-900 text-xs flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-red-600"></span>
+                            <span>{villageName}</span>
+                          </h5>
+                          {assignedAdmins.length > 1 && (
+                            <span className="text-[9px] font-black bg-purple-100 text-purple-900 px-1.5 py-0.5 rounded-full border border-purple-200">
+                              👥 Multi-Admin ({assignedAdmins.length})
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="text-[10px] text-slate-500 font-medium">
+                          Buldhana District • Mehkar Taluka
+                        </div>
+
+                        {/* Assigned Admins Pills */}
+                        <div className="pt-1 space-y-1">
+                          <div className="text-[10px] font-bold text-slate-600">
+                            {isHindi ? 'असाइन किए गए एडमिन:' : 'Assigned Admins:'}
+                          </div>
+                          {assignedAdmins.length === 0 ? (
+                            <div className="text-[10px] text-slate-400 italic">
+                              {isHindi ? 'कोई एडमिन असाइन नहीं' : 'No Admin assigned yet'}
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {assignedAdmins.map((adm) => (
+                                <span
+                                  key={adm.uid}
+                                  className="text-[9px] font-bold bg-white text-slate-800 px-2 py-0.5 rounded-md border border-slate-200 truncate max-w-full"
+                                >
+                                  👤 {adm.displayName || adm.email}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Footer: Bookings count & Quick Assign button */}
+                      <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-1 text-[10px]">
+                        <span className="font-bold text-red-600">
+                          {villageBookings.length} {isHindi ? 'बुकिंग्स' : 'Bookings'}
+                        </span>
+
+                        {isPrimaryOwner && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // If there's an active non-owner admin, open assignment for them
+                              const firstAdmin = allAdminsList.find(
+                                (u) => u.role === 'admin' && !u.isDeactivated && !isEmailPrimaryOwner(u.email || '')
+                              );
+                              if (firstAdmin) {
+                                setSelectedAdminForTerritory(firstAdmin);
+                                setIsTerritoryModalOpen(true);
+                              } else {
+                                setIsAddAdminModalOpen(true);
+                              }
+                            }}
+                            className="font-bold text-red-600 hover:text-red-700 hover:underline cursor-pointer"
+                          >
+                            {isHindi ? 'असाइन करें ➔' : 'Assign ➔'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
 
@@ -2838,6 +3874,138 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         onDismissLater={() => setIsPreviewUpdateModalOpen(false)}
         isHindi={isHindi}
       />
+
+      {/* ======================================================== */}
+      {/* MODAL 6: TERRITORY ASSIGNMENT MODAL (VILLAGE & CITY)     */}
+      {/* ======================================================== */}
+      <TerritoryAssignmentModal
+        isOpen={isTerritoryModalOpen}
+        onClose={() => {
+          setIsTerritoryModalOpen(false);
+          setSelectedAdminForTerritory(null);
+        }}
+        targetAdmin={selectedAdminForTerritory}
+        allUsers={allAdminsList}
+        onAssignmentsUpdated={(adminUid, updatedTerritories) => {
+          triggerSaveNotification(
+            isHindi 
+              ? '✓ क्षेत्र आवंटन सफलतापूर्वक अपडेट किया गया' 
+              : '✓ Territory assignments updated successfully'
+          );
+          setAllAdminsList((prev) =>
+            prev.map((u) => (u.uid === adminUid ? { ...u, assignedTerritories: updatedTerritories } : u))
+          );
+          onRefreshLeads();
+        }}
+      />
+
+      {/* ======================================================== */}
+      {/* MODAL 7: ADD NEW ADMIN WITH VILLAGE ASSIGNMENT           */}
+      {/* ======================================================== */}
+      <AddAdminModal
+        isOpen={isAddAdminModalOpen}
+        onClose={() => setIsAddAdminModalOpen(false)}
+        onAdminCreated={(newAdmin) => {
+          triggerSaveNotification(
+            isHindi
+              ? `✓ नया एडमिन ${newAdmin.displayName} सफलतापूर्वक बनाया गया`
+              : `✓ New Admin ${newAdmin.displayName} created successfully`
+          );
+          setAllAdminsList((prev) => [...prev, newAdmin]);
+          onRefreshLeads();
+        }}
+      />
+
+      {/* ======================================================== */}
+      {/* MODAL 8: DELETE CUSTOMER ID CONFIRMATION (OWNER ONLY)    */}
+      {/* ======================================================== */}
+      {customerToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-red-200 space-y-5 animate-in fade-in zoom-in-95">
+            <div className="flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center shrink-0 shadow-xs">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-slate-900">
+                  {isHindi ? 'ग्राहक आईडी डिलीट करें?' : 'Delete Customer Account?'}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {isHindi 
+                    ? 'क्या आप वाकई इस ग्राहक की आईडी और खाता डेटाबेस से हटाना चाहते हैं?' 
+                    : 'Are you sure you want to delete this customer ID from Firebase Firestore?'}
+                </p>
+              </div>
+            </div>
+
+            {/* Customer Details Box */}
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-xs space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'ग्राहक का नाम:' : 'Customer Name:'}</span>
+                <span className="font-extrabold text-slate-900">{customerToDelete.displayName || 'Customer'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'मोबाइल नंबर:' : 'Mobile Number:'}</span>
+                <span className="font-mono font-bold text-slate-900">{customerToDelete.phone || customerToDelete.phoneNumber || 'N/A'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'ईमेल / लॉगिन आईडी:' : 'Login ID / Email:'}</span>
+                <span className="font-mono text-slate-700 truncate max-w-[200px]" title={customerToDelete.email || customerToDelete.uid}>
+                  {customerToDelete.email || customerToDelete.uid}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'कुल लॉगिन संख्या:' : 'Total Logins:'}</span>
+                <span className="font-bold text-emerald-700">{customerToDelete.loginCount ?? (customerToDelete.hasLoggedIn ? 1 : 0)} {isHindi ? 'बार' : 'times'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'अंतिम लॉगिन:' : 'Last Login:'}</span>
+                <span className="text-slate-700">
+                  {customerToDelete.lastLoginAt ? new Date(customerToDelete.lastLoginAt).toLocaleString('en-IN') : (customerToDelete.hasLoggedIn ? 'Logged in' : 'Never')}
+                </span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-[11px] text-red-800 leading-relaxed font-semibold flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <span>
+                {isHindi
+                  ? 'सुरक्षा चेतावनी: यह ग्राहक आईडी हटाने के बाद ग्राहक ऐप में दोबारा लॉगिन नहीं कर सकेगा। यह कार्रवाई केवल Primary Owner द्वारा की जा सकती है।'
+                  : 'Warning: This action permanently deletes the user ID from Firebase. The customer will no longer be able to log in with this ID.'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={isDeletingCustomer}
+                onClick={() => setCustomerToDelete(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-all"
+              >
+                {isHindi ? 'रद्द करें' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingCustomer}
+                onClick={handleDeleteCustomerConfirm}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white flex items-center gap-1.5 cursor-pointer shadow-md transition-all disabled:opacity-50"
+              >
+                {isDeletingCustomer ? (
+                  <>
+                    <span className="animate-spin">⟳</span>
+                    <span>{isHindi ? 'हटाया जा रहा है...' : 'Deleting...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>{isHindi ? 'हाँ, आईडी डिलीट करें' : 'Yes, Delete ID'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

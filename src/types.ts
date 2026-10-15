@@ -16,6 +16,16 @@ export type UserRole = 'customer' | 'admin' | 'owner' | 'pending_admin';
 
 export type AdminApprovalStatus = 'none' | 'pending' | 'approved' | 'rejected' | 'deactivated' | 'deleted';
 
+export interface AdminTerritoryAssignment {
+  id: string;
+  state: string;
+  district: string;
+  taluka: string; // or City
+  village: string; // Village or City Area
+  assignedAt: string;
+  assignedBy?: string;
+}
+
 export interface UserProfile {
   uid: string;
   customerUid?: string; // Authenticated Firebase UID for customer profile
@@ -54,6 +64,14 @@ export interface UserProfile {
   district?: string;
   state?: string;
   pincode?: string;
+
+  // Village-wise & City-wise Admin Assignment System
+  assignedState?: string;
+  assignedDistrict?: string;
+  assignedTaluka?: string;
+  assignedVillage?: string;
+  assignedVillages?: string[];
+  assignedTerritories?: AdminTerritoryAssignment[];
 }
 
 export type LeadType = 
@@ -113,10 +131,16 @@ export interface Lead {
   state?: string;
   district?: string;
   taluka?: string;
+  village?: string;
   address?: string;
   customerAddress?: string;
   cityCircle?: string;
   pincode?: string;
+
+  // Village-wise Assigned Admins (allows multiple admins per village)
+  assignedAdminUids?: string[];
+  assignedAdminNames?: string[];
+  assignedAt?: string;
 
   // Customer Location (Opt-in GPS coordinates shared during booking)
   locationCoordinates?: CustomerLocation;
@@ -236,12 +260,21 @@ export interface AppUpdateConfig {
   releasedAt?: string;
 }
 
+export type MultiAdminRule = 'shared_pool' | 'round_robin' | 'primary_admin';
+
+export interface TerritoryRulesConfig {
+  multiAdminMode: MultiAdminRule;
+  updatedAt?: string;
+  updatedBy?: string;
+}
+
 export interface PortalConfig {
   banners: PortalBanner[];
   logo: PortalLogoConfig;
   offers: PortalOfferItem[];
   adminHelp: PortalAdminHelp;
   texts: PortalTexts;
+  territoryRules?: TerritoryRulesConfig;
   appUpdate?: AppUpdateConfig;
   updatedAt?: string;
   updatedBy?: string;
@@ -252,6 +285,7 @@ export type AdminSection =
   | 'dashboard'
   | 'bookings'
   | 'customers'
+  | 'territories'
   | 'offers'
   | 'banners'
   | 'logo'

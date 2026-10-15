@@ -39,12 +39,14 @@ import {
   deactivateAdminUser,
   reactivateAdminUser,
   removeAdminUser,
+  deleteCustomerUser,
   isEmailPrimaryOwner,
   PRIMARY_OWNER_EMAIL
 } from '../services/userService';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { AddAdminModal } from './AddAdminModal';
+import { TerritoryAssignmentModal } from './admin/TerritoryAssignmentModal';
 
 interface AdminUsersViewProps {
   allLeads: Lead[];
@@ -77,6 +79,31 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
   } | null>(null);
   const [actionReason, setActionReason] = useState('');
   const [isSubmittingAction, setIsSubmittingAction] = useState(false);
+  const [selectedAdminForTerritory, setSelectedAdminForTerritory] = useState<UserProfile | null>(null);
+  const [isTerritoryModalOpen, setIsTerritoryModalOpen] = useState(false);
+  const [customerToDelete, setCustomerToDelete] = useState<UserProfile | null>(null);
+  const [isDeletingCustomer, setIsDeletingCustomer] = useState(false);
+
+  const handleDeleteCustomer = async () => {
+    if (!customerToDelete || !authUser || !isOwnerAdmin) return;
+    setIsDeletingCustomer(true);
+    setErrorMsg(null);
+    try {
+      await deleteCustomerUser(customerToDelete.uid, authUser.email || undefined);
+      setSuccessMsg(
+        language === 'hi'
+          ? `ग्राहक आईडी "${customerToDelete.displayName || customerToDelete.phone || customerToDelete.uid}" सफलतापूर्वक हटा दी गई।`
+          : `Customer ID "${customerToDelete.displayName || customerToDelete.phone || customerToDelete.uid}" has been deleted.`
+      );
+      setCustomerToDelete(null);
+      setTimeout(() => setSuccessMsg(null), 4000);
+      await loadData();
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'ग्राहक आईडी डिलीट करने में त्रुटि हुई');
+    } finally {
+      setIsDeletingCustomer(false);
+    }
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -651,15 +678,36 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                       </td>
 
                       <td className="py-3 px-3 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={() => onFilterByUser(cust.uid)}
-                          className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-all inline-flex items-center gap-1 cursor-pointer"
-                          title="View Customer Leads"
-                        >
-                          <span>{leadStats.total} Leads</span>
-                          <ArrowUpRight className="w-3 h-3" />
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => onFilterByUser(cust.uid)}
+                            className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 transition-all inline-flex items-center gap-1 cursor-pointer"
+                            title="View Customer Leads"
+                          >
+                            <span>{leadStats.total} Leads</span>
+                            <ArrowUpRight className="w-3 h-3" />
+                          </button>
+                          {isOwnerAdmin ? (
+                            <button
+                              type="button"
+                              onClick={() => setCustomerToDelete(cust)}
+                              className="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-600 hover:text-white text-red-700 border border-red-200 transition-all inline-flex items-center gap-1 cursor-pointer shadow-2xs"
+                              title={language === 'hi' ? 'ग्राहक आईडी डिलीट करें (केवल Primary Owner)' : 'Delete Customer ID (Owner Only)'}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>{language === 'hi' ? 'आईडी डिलीट' : 'Delete ID'}</span>
+                            </button>
+                          ) : (
+                            <span
+                              className="text-[10px] font-bold px-2 py-1 rounded-lg bg-gray-100 text-gray-400 border border-gray-200 inline-flex items-center gap-1 cursor-not-allowed"
+                              title={language === 'hi' ? 'केवल Primary Owner ही ग्राहक आईडी डिलीट कर सकते हैं' : 'Only Primary Owner can delete customer IDs'}
+                            >
+                              <Lock className="w-3 h-3 text-gray-400" />
+                              <span>Owner Only</span>
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -865,13 +913,25 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
 
                     {/* Stats */}
                     {isNormalAdmin && (
-                      <div className="mt-2 flex items-center gap-2 text-[10px] text-gray-600">
+                      <div className="mt-2 flex items-center gap-2 text-[10px] text-gray-600 flex-wrap">
                         <span className="bg-gray-50 border border-gray-200 px-2 py-0.5 rounded-md font-medium">
                           Leads: <strong className="text-gray-900">{stats.total}</strong>
                         </span>
                         <span className="bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md text-emerald-800 font-medium">
                           Ported: <strong className="text-emerald-950">{stats.ported}</strong>
                         </span>
+                        {/* Assigned Territory Badges */}
+                        {user.assignedTerritories && user.assignedTerritories.length > 0 ? (
+                          user.assignedTerritories.map((t) => (
+                            <span key={t.id} className="text-[10px] font-bold bg-red-100 text-red-800 px-2 py-0.5 rounded-full border border-red-200">
+                              🏡 {t.village || t.taluka}
+                            </span>
+                          ))
+                        ) : user.assignedVillage ? (
+                          <span className="text-[10px] font-bold bg-red-100 text-red-800 px-2 py-0.5 rounded-full border border-red-200">
+                            🏡 {user.assignedVillage}
+                          </span>
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -892,6 +952,21 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                   {/* Owner Controls on Admins */}
                   {isOwnerAdmin && !isOwner && !isSelf && (
                     <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                      {isNormalAdmin && !isDeactivated && user.status !== 'deleted' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedAdminForTerritory(user);
+                            setIsTerritoryModalOpen(true);
+                          }}
+                          className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-purple-50 text-purple-900 hover:bg-purple-100 border border-purple-200 transition-colors flex items-center gap-1 cursor-pointer"
+                          title="Assign Village / City Territory"
+                        >
+                          <MapPin className="w-3 h-3 text-purple-600" />
+                          <span>{language === 'hi' ? 'गाँव आवंटन' : 'Territory'}</span>
+                        </button>
+                      )}
+
                       {isNormalAdmin && !isDeactivated && user.status !== 'deleted' && (
                         <button
                           id={`deactivate-btn-${user.uid}`}
@@ -1098,6 +1173,101 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                       ? (language === 'hi' ? 'हां, Access हटाएं' : 'Confirm Revoke')
                       : (language === 'hi' ? 'हां, Deactivate करें' : 'Confirm Deactivate')}
                   </span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Territory Assignment Modal */}
+      <TerritoryAssignmentModal
+        isOpen={isTerritoryModalOpen}
+        onClose={() => {
+          setIsTerritoryModalOpen(false);
+          setSelectedAdminForTerritory(null);
+        }}
+        targetAdmin={selectedAdminForTerritory}
+        allUsers={users}
+        onAssignmentsUpdated={(adminUid, updatedTerritories) => {
+          setSuccessMsg(language === 'hi' ? 'गाँव/क्षेत्र आवंटन सफलतापूर्वक अपडेट हुआ' : 'Territory updated successfully');
+          setUsers((prev) =>
+            prev.map((u) => (u.uid === adminUid ? { ...u, assignedTerritories: updatedTerritories } : u))
+          );
+        }}
+      />
+
+      {/* Delete Customer ID Modal (Owner Only) */}
+      {customerToDelete && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-red-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-start gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-gray-900">
+                  {language === 'hi' ? 'ग्राहक आईडी डिलीट करें?' : 'Delete Customer Account?'}
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  {language === 'hi'
+                    ? 'क्या आप वाकई इस ग्राहक की आईडी और खाता डेटाबेस से हटाना चाहते हैं?'
+                    : 'Are you sure you want to delete this customer ID from Firebase Firestore?'}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 p-4 rounded-2xl border border-gray-200 text-xs space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">{language === 'hi' ? 'नाम:' : 'Name:'}</span>
+                <span className="font-extrabold text-gray-900">{customerToDelete.displayName || 'Customer'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">{language === 'hi' ? 'मोबाइल:' : 'Mobile:'}</span>
+                <span className="font-mono font-bold text-gray-900">{customerToDelete.phone || customerToDelete.phoneNumber || 'N/A'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">{language === 'hi' ? 'ईमेल / ID:' : 'Email / ID:'}</span>
+                <span className="font-mono text-gray-700 truncate max-w-[200px]" title={customerToDelete.email || customerToDelete.uid}>
+                  {customerToDelete.email || customerToDelete.uid}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500">{language === 'hi' ? 'लॉगिन संख्या:' : 'Logins:'}</span>
+                <span className="font-bold text-emerald-700">{customerToDelete.loginCount ?? (customerToDelete.hasLoggedIn ? 1 : 0)} {language === 'hi' ? 'बार' : 'times'}</span>
+              </div>
+            </div>
+
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-[11px] text-red-800 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <span>
+                {language === 'hi'
+                  ? 'चेतावनी: खाता हटाने के बाद ग्राहक दोबारा इस आईडी से लॉगिन नहीं कर सकेगा। केवल Primary Owner ही यह कर सकते हैं।'
+                  : 'Warning: This customer account will be permanently removed. Only Primary Owner can perform this action.'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingCustomer}
+                onClick={() => setCustomerToDelete(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-700 cursor-pointer"
+              >
+                {language === 'hi' ? 'रद्द करें' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingCustomer}
+                onClick={handleDeleteCustomer}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white flex items-center gap-1.5 cursor-pointer shadow-md disabled:opacity-50"
+              >
+                {isDeletingCustomer ? (
+                  <span>{language === 'hi' ? 'हटाया जा रहा है...' : 'Deleting...'}</span>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>{language === 'hi' ? 'हाँ, आईडी डिलीट करें' : 'Yes, Delete ID'}</span>
+                  </>
                 )}
               </button>
             </div>

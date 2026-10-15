@@ -17,10 +17,86 @@
     <meta property="og:description" content="Vi Sales MNP - Role-based Porting and SIM Management application with dedicated Admin and Customer portals, Firestore Security Rules, UID-isolated data access, and Firebase Authentication." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #f1f5f9;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      }
+      #initial-loader {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #e60000;
+        color: #ffffff;
+        text-align: center;
+        padding: 20px;
+        box-sizing: border-box;
+      }
+      .vi-loader-logo {
+        width: 56px;
+        height: 56px;
+        background: #ffffff;
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        font-weight: 900;
+        color: #e60000;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.25);
+        margin-bottom: 16px;
+        animation: vi-pulse 1.4s ease-in-out infinite alternate;
+      }
+      @keyframes vi-pulse {
+        0% { transform: scale(0.96); }
+        100% { transform: scale(1.04); }
+      }
+    </style>
+
+    <script>
+      // 1. Log errors safely without prematurely destroying the loader
+      window.addEventListener('error', function(e) {
+        if (!e || !e.message) return;
+        // Ignore non-fatal warnings from extensions, reCAPTCHA, or resize observers
+        if (
+          e.message.indexOf('ResizeObserver') !== -1 ||
+          e.message.indexOf('Script error') !== -1 ||
+          e.message.indexOf('recaptcha') !== -1 ||
+          e.message.indexOf('WebSocket') !== -1
+        ) {
+          return;
+        }
+        console.error('Vi Sales MNP Startup Script Notice:', e.error || e.message);
+      });
+
+      // 2. Safely unregister any legacy service workers in background without page reloads
+      try {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function(registrations) {
+            for (var i = 0; i < registrations.length; i++) {
+              registrations[i].unregister().catch(function() {});
+            }
+          }).catch(function() {});
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Branded instant placeholder while bundle hydrates to guarantee NO white blank screen -->
+      <div id="initial-loader">
+        <div class="vi-loader-logo">
+          V<span style="color:#f59e0b;">!</span>
+        </div>
+        <div style="font-size:16px;font-weight:800;letter-spacing:0.5px;">Vi Sales MNP</div>
+        <div style="font-size:12px;font-weight:600;opacity:0.9;margin-top:4px;">वोडाफोन आइडिया पोर्टल लोड हो रहा है...</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-

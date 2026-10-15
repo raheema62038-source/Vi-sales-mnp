@@ -166,9 +166,28 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   const logo = portalConfig.logo || DEFAULT_PORTAL_CONFIG.logo;
   const isHindi = language === 'hi';
 
+  // Active Admin-configured Banners & Offers (live-synced)
+  const activeBanners = useMemo(() => {
+    const list = Array.isArray(portalConfig.banners) && portalConfig.banners.length > 0
+      ? portalConfig.banners
+      : DEFAULT_PORTAL_CONFIG.banners;
+    return list
+      .filter((b) => b && b.enabled !== false)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+  }, [portalConfig.banners]);
+
+  const activeOffers = useMemo(() => {
+    const list = Array.isArray(portalConfig.offers) && portalConfig.offers.length > 0
+      ? portalConfig.offers
+      : DEFAULT_PORTAL_CONFIG.offers;
+    return list
+      .filter((o) => o && o.enabled !== false)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+  }, [portalConfig.offers]);
+
   // Admin Mobile & WhatsApp Numbers
   const adminMobileNumber = (adminHelp.callNumber || adminHelp.helpNumber || '9175601497').replace(/\D/g, '').slice(-10) || '9175601497';
-  const adminWhatsAppRaw = adminHelp.whatsappNumber || adminHelp.callNumber || '9175601497';
+  const adminWhatsAppRaw = adminHelp.whatsappNumber || adminHelp.callNumber || adminHelp.helpNumber || '9175601497';
   const adminWhatsAppClean = adminWhatsAppRaw.replace(/\D/g, '').slice(-10) || '9175601497';
   const adminWhatsAppFormatted = `+91 ${adminWhatsAppClean}`;
   const defaultWhatsAppMsg = isHindi
@@ -181,7 +200,16 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
     if (!user) return [];
     const currentUid = user.uid;
     const currentEmail = (user.email || '').toLowerCase().trim();
-    const customerPhone = (userProfile?.phoneNumber || userProfile?.phone || user?.phoneNumber || '').replace(/\D/g, '').slice(-10);
+    const emailPhone = /^(\d{10})@/.test(currentEmail) ? currentEmail.slice(0, 10) : '';
+    const customerPhone = (
+      userProfile?.phoneNumber ||
+      userProfile?.phone ||
+      user?.phoneNumber ||
+      emailPhone ||
+      ''
+    )
+      .replace(/\D/g, '')
+      .slice(-10);
 
     return leads.filter((lead) => {
       // 1. Direct match by Customer UID or Creator UID
@@ -202,6 +230,12 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
       return false;
     });
   }, [leads, user, userProfile]);
+
+  // Keep selectedLead synchronized with live updates from myLeads
+  const activeSelectedLead = useMemo(() => {
+    if (!selectedLead) return null;
+    return myLeads.find((l) => l.id === selectedLead.id) || selectedLead;
+  }, [selectedLead, myLeads]);
 
   // Derive latest booking for profile address fallback
   const latestLead = myLeads[0];
@@ -267,54 +301,82 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
     }
   };
 
-  // Progress Stage Calculation (1 to 5)
-  const getProgressStage = (status: string) => {
-    switch (status) {
-      case 'New':
-        return 1;
-      case 'UPC Generated':
-        return 2;
-      case 'SIM Allocated':
-        return 3;
-      case 'E-KYC Done':
-        return 4;
-      case 'Ported':
-        return 5;
-      default:
-        return 1;
+  // Progress Stage Calculation (1 to 5) supporting both Admin bookingStatus and lead status
+  const getProgressStage = (statusOrBookingStatus?: string, fallbackStatus?: string) => {
+    const primary = (statusOrBookingStatus || '').trim();
+    const secondary = (fallbackStatus || '').trim();
+
+    if (primary === 'Completed' || primary === 'Ported' || secondary === 'Ported') return 5;
+    if (primary === 'E-KYC Done' || secondary === 'E-KYC Done') return 4;
+    if (primary === 'SIM Dispatched' || primary === 'SIM Allocated' || secondary === 'SIM Allocated') return 3;
+    if (
+      primary === 'In Process' ||
+      primary === 'Verified' ||
+      primary === 'UPC Generated' ||
+      secondary === 'UPC Generated'
+    ) {
+      return 2;
     }
+    if (primary === 'Cancelled') return 1;
+    return 1;
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
+  const getStatusBadge = (statusOrBookingStatus?: string, fallbackStatus?: string) => {
+    const current = (statusOrBookingStatus || fallbackStatus || 'New').trim();
+    switch (current) {
+      case 'Completed':
       case 'Ported':
         return {
           bg: 'bg-emerald-100 text-emerald-900 border-emerald-300',
-          text: isHindi ? 'सक्रिय / पोर्टेड' : 'Ported & Active',
+          text: isHindi ? 'पूर्ण / सक्रिय (Completed)' : 'Completed & Active',
           icon: <CheckCircle2 className="w-4 h-4 text-emerald-600" />,
         };
       case 'E-KYC Done':
         return {
           bg: 'bg-blue-100 text-blue-900 border-blue-300',
-          text: isHindi ? 'ई-केवाईसी पूर्ण' : 'E-KYC Completed',
+          text: isHindi ? 'ई-केवाईसी पूर्ण (E-KYC Done)' : 'E-KYC Completed',
           icon: <ShieldCheck className="w-4 h-4 text-blue-600" />,
         };
+      case 'SIM Dispatched':
       case 'SIM Allocated':
         return {
           bg: 'bg-amber-100 text-amber-950 border-amber-300',
-          text: isHindi ? 'सिम आवंटित' : 'SIM Dispatched',
+          text: isHindi ? 'सिम डिस्पैच / आवंटित (SIM Dispatched)' : 'SIM Dispatched',
           icon: <Truck className="w-4 h-4 text-amber-600" />,
         };
+      case 'In Process':
       case 'UPC Generated':
         return {
           bg: 'bg-purple-100 text-purple-900 border-purple-300',
-          text: isHindi ? 'UPC प्राप्त' : 'UPC Received',
+          text: isHindi ? 'प्रक्रिया में (In Process)' : 'In Process / UPC Ready',
           icon: <FileText className="w-4 h-4 text-purple-600" />,
         };
+      case 'Verified':
+        return {
+          bg: 'bg-teal-100 text-teal-900 border-teal-300',
+          text: isHindi ? 'सत्यापित बुकिंग (Verified)' : 'Booking Verified',
+          icon: <ShieldCheck className="w-4 h-4 text-teal-600" />,
+        };
+      case 'Cancelled':
+        return {
+          bg: 'bg-rose-100 text-rose-900 border-rose-300',
+          text: isHindi ? 'रद्द (Cancelled)' : 'Cancelled',
+          icon: <X className="w-4 h-4 text-rose-600" />,
+        };
+      case 'Booked':
+      case 'Pending':
+      case 'Lead Received':
       default:
         return {
           bg: 'bg-red-50 text-red-800 border-red-200',
-          text: isHindi ? 'अनुरोध प्राप्त' : 'Request Received',
+          text:
+            current === 'Booked'
+              ? isHindi
+                ? 'बुकिंग दर्ज (Booked)'
+                : 'Booked'
+              : isHindi
+              ? 'अनुरोध प्राप्त (Pending)'
+              : 'Request Received',
           icon: <Clock className="w-4 h-4 text-red-500" />,
         };
     }
@@ -323,7 +385,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
   return (
     <div className="min-h-screen bg-slate-100/90 text-slate-800 font-sans flex flex-col justify-between">
       {/* =================================================================== */}
-      {/* HEADER: Clean Top Bar (Personal Details are kept inside Profile) */}
+      {/* HEADER: Clean Top Bar (Live synced with Admin Brand Logo settings)  */}
       {/* =================================================================== */}
       <header className="sticky top-0 z-30 bg-red-600 text-white shadow-md">
         <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
@@ -340,10 +402,18 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             </div>
             <div>
               <h1 className="font-black text-base sm:text-lg tracking-tight leading-tight">
-                {isHindi ? 'Vi ग्राहक पोर्टल' : 'Vi Customer Portal'}
+                {logo.text && logo.text !== DEFAULT_PORTAL_CONFIG.logo.text
+                  ? logo.text
+                  : isHindi
+                  ? 'Vi ग्राहक पोर्टल'
+                  : logo.text || 'Vi Customer Portal'}
               </h1>
               <p className="text-[11px] text-red-100 font-medium">
-                {isHindi ? 'मेहेकर डोरस्टेप सिम पोर्टिंग' : 'Mehkar Doorstep SIM Service'}
+                {logo.subtext && logo.subtext !== DEFAULT_PORTAL_CONFIG.logo.subtext
+                  ? logo.subtext
+                  : isHindi
+                  ? 'मेहेकर डोरस्टेप सिम पोर्टिंग'
+                  : logo.subtext || 'Mehkar Doorstep SIM Service'}
               </p>
             </div>
           </div>
@@ -385,6 +455,13 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Live Global Announcement Bar (if configured by Admin) */}
+        {portalConfig.texts?.announcement && (
+          <div className="bg-amber-400 text-red-950 text-xs font-extrabold px-4 py-1.5 text-center shadow-2xs">
+            <span>📢 {portalConfig.texts.announcement}</span>
+          </div>
+        )}
       </header>
 
       {/* =================================================================== */}
@@ -392,42 +469,160 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
       {/* =================================================================== */}
       <main className="max-w-4xl w-full mx-auto px-4 py-6 space-y-6">
 
-        {/* 2. NEW BOOKING: Separate Button / Card on Dashboard */}
-        <section id="section-new-booking" className="animate-in fade-in duration-200">
-          <div className="bg-gradient-to-r from-red-600 to-red-700 rounded-3xl p-5 sm:p-6 text-white shadow-md border border-red-500 relative overflow-hidden flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className="space-y-1.5 z-10">
-              <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-amber-400 text-red-950 text-[11px] font-black uppercase tracking-wide">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>{isHindi ? 'डोरस्टेप सिम डिलीवरी' : 'Doorstep SIM Service'}</span>
-              </div>
-              <h2 className="text-xl sm:text-2xl font-black tracking-tight">
-                {isHindi ? '✨ नई सिम पोर्टिंग बुकिंग (New Booking)' : '✨ New SIM Porting Booking'}
-              </h2>
-              <p className="text-xs sm:text-sm text-red-100 font-medium">
-                {isHindi 
-                  ? 'अपना नंबर Vi 4G/5G में फ्री में पोर्ट कराएं। सिम आपके घर पर डिलीवर की जाएगी।'
-                  : 'Port your existing number or get a new Vi SIM delivered at your doorstep in Mehkar.'}
-              </p>
-            </div>
-
-            <div className="z-10 shrink-0 w-full sm:w-auto">
-              <button
-                type="button"
-                id="btn-customer-new-booking"
-                onClick={onOpenNewRequest}
-                className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-red-950 font-black text-sm shadow-md flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+        {/* 2. NEW BOOKING & ADMIN LIVE BANNERS */}
+        <section id="section-new-booking" className="space-y-4 animate-in fade-in duration-200">
+          {activeBanners.length > 0 ? (
+            activeBanners.map((ban, idx) => (
+              <div
+                key={ban.id || idx}
+                className={`bg-gradient-to-r ${
+                  ban.bgGradient || 'from-red-600 to-red-700'
+                } rounded-3xl p-5 sm:p-6 text-white shadow-md border border-red-500 relative overflow-hidden flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4`}
               >
-                <Plus className="w-5 h-5 stroke-[3]" />
-                <span>{isHindi ? 'नई बुकिंग करें' : 'Book New Porting'}</span>
-              </button>
-            </div>
+                <div className="space-y-1.5 z-10 max-w-xl">
+                  <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-amber-400 text-red-950 text-[11px] font-black uppercase tracking-wide">
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>{ban.badge || (isHindi ? 'डोरस्टेप सिम डिलीवरी' : 'Doorstep SIM Service')}</span>
+                  </div>
+                  <h2 className="text-xl sm:text-2xl font-black tracking-tight">
+                    {ban.title || (isHindi ? '✨ नई सिम पोर्टिंग बुकिंग (New Booking)' : '✨ New SIM Porting Booking')}
+                  </h2>
+                  <p className="text-xs sm:text-sm text-red-100 font-medium">
+                    {ban.subtitle ||
+                      (isHindi
+                        ? 'अपना नंबर Vi 4G/5G में फ्री में पोर्ट कराएं। सिम आपके घर पर डिलीवर की जाएगी।'
+                        : 'Port your existing number or get a new Vi SIM delivered at your doorstep in Mehkar.')}
+                  </p>
+                  {ban.imageUrl && (
+                    <div className="pt-2">
+                      <img
+                        src={ban.imageUrl}
+                        alt={ban.title}
+                        className="max-h-36 rounded-2xl object-cover border border-white/25 shadow-sm"
+                      />
+                    </div>
+                  )}
+                </div>
 
-            {/* Subtle background decoration */}
-            <div className="absolute right-[-10px] bottom-[-20px] opacity-10 text-white font-black text-8xl select-none pointer-events-none">
-              Vi
+                <div className="z-10 shrink-0 w-full sm:w-auto">
+                  {(ban.ctaAction as string) === 'call' || (ban.ctaAction as string) === 'call_support' ? (
+                    <a
+                      href={`tel:${adminMobileNumber}`}
+                      className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-red-950 font-black text-sm shadow-md flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+                    >
+                      <PhoneCall className="w-5 h-5" />
+                      <span>{ban.ctaText || (isHindi ? 'अभी कॉल करें' : 'Call Support')}</span>
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      id={idx === 0 ? 'btn-customer-new-booking' : `btn-customer-banner-${idx}`}
+                      onClick={onOpenNewRequest}
+                      className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-red-950 font-black text-sm shadow-md flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+                    >
+                      <Plus className="w-5 h-5 stroke-[3]" />
+                      <span>{ban.ctaText || (isHindi ? 'नई बुकिंग करें' : 'Book New Porting')}</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Subtle background decoration */}
+                <div className="absolute right-[-10px] bottom-[-20px] opacity-10 text-white font-black text-8xl select-none pointer-events-none">
+                  {logo.symbol || 'Vi'}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="bg-gradient-to-r from-red-600 to-red-700 rounded-3xl p-5 sm:p-6 text-white shadow-md border border-red-500 relative overflow-hidden flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="space-y-1.5 z-10">
+                <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-amber-400 text-red-950 text-[11px] font-black uppercase tracking-wide">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{isHindi ? 'डोरस्टेप सिम डिलीवरी' : 'Doorstep SIM Service'}</span>
+                </div>
+                <h2 className="text-xl sm:text-2xl font-black tracking-tight">
+                  {isHindi ? '✨ नई सिम पोर्टिंग बुकिंग (New Booking)' : '✨ New SIM Porting Booking'}
+                </h2>
+                <p className="text-xs sm:text-sm text-red-100 font-medium">
+                  {isHindi
+                    ? 'अपना नंबर Vi 4G/5G में फ्री में पोर्ट कराएं। सिम आपके घर पर डिलीवर की जाएगी।'
+                    : 'Port your existing number or get a new Vi SIM delivered at your doorstep in Mehkar.'}
+                </p>
+              </div>
+
+              <div className="z-10 shrink-0 w-full sm:w-auto">
+                <button
+                  type="button"
+                  id="btn-customer-new-booking"
+                  onClick={onOpenNewRequest}
+                  className="w-full sm:w-auto px-6 py-3.5 rounded-2xl bg-amber-400 hover:bg-amber-300 text-red-950 font-black text-sm shadow-md flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
+                >
+                  <Plus className="w-5 h-5 stroke-[3]" />
+                  <span>{isHindi ? 'नई बुकिंग करें' : 'Book New Porting'}</span>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </section>
+
+        {/* =================================================================== */}
+        {/* LIVE ADMIN PROMOTIONAL OFFERS SECTION                               */}
+        {/* =================================================================== */}
+        {activeOffers.length > 0 && (
+          <section id="section-live-offers" className="space-y-3 animate-in fade-in duration-200">
+            <div className="grid grid-cols-1 gap-4">
+              {activeOffers.map((off, idx) => (
+                <div
+                  key={off.id || idx}
+                  className="bg-gradient-to-br from-white via-red-50/40 to-amber-50/40 rounded-3xl border-2 border-red-200/90 p-5 shadow-xs space-y-4"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-100 pb-3">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-red-600 text-white text-[10px] font-black uppercase tracking-wider shadow-2xs">
+                        <Sparkles className="w-3 h-3 text-amber-300" />
+                        <span>{off.badge || 'PROMOTIONAL OFFER'}</span>
+                      </span>
+                      {(off.price || off.validity) && (
+                        <span className="px-2.5 py-0.5 rounded-lg text-xs font-black bg-amber-100 text-amber-950 border border-amber-300">
+                          {[off.price, off.validity].filter(Boolean).join(' • ')}
+                        </span>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={onOpenNewRequest}
+                      className="px-4 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black flex items-center gap-1.5 shadow-2xs transition-all active:scale-95 cursor-pointer"
+                    >
+                      <span>{isHindi ? 'ऑफर बुक करें' : 'Claim Offer'}</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  <div>
+                    <h3 className="text-lg sm:text-xl font-black text-red-700 uppercase tracking-tight">
+                      {off.heading}
+                    </h3>
+                    {off.disclaimer && (
+                      <p className="text-[11px] text-slate-500 mt-0.5">{off.disclaimer}</p>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {(off.items || []).map((item, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-red-100 text-xs font-bold text-slate-800 shadow-2xs"
+                      >
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* =================================================================== */}
         {/* ADMIN WHATSAPP CONTACT: "Admin से WhatsApp पर संपर्क करें" */}
@@ -441,12 +636,12 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               <div className="space-y-0.5">
                 <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-200/80 text-emerald-950 text-[10px] font-black uppercase tracking-wider">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse"></span>
-                  <span>{isHindi ? 'सीधा संपर्क' : 'Direct Support'}</span>
+                  <span>{adminHelp.supportTitle || (isHindi ? 'सीधा संपर्क' : 'Direct Support')}</span>
                 </div>
                 <h3 className="font-black text-base sm:text-lg text-emerald-950 tracking-tight leading-snug">
                   {isHindi ? 'Admin से WhatsApp पर संपर्क करें' : 'Contact Admin on WhatsApp'}
                 </h3>
-                <p className="text-xs text-emerald-800 font-semibold flex items-center gap-1.5">
+                <p className="text-xs text-emerald-800 font-semibold flex flex-wrap items-center gap-1.5">
                   <span>{isHindi ? 'WhatsApp नंबर:' : 'WhatsApp Number:'}</span>
                   <a 
                     href={adminWhatsAppUrl}
@@ -456,6 +651,11 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                   >
                     {adminWhatsAppFormatted}
                   </a>
+                  {adminMobileNumber && (
+                    <span className="text-emerald-700 text-[11px]">
+                      • {isHindi ? 'कॉल:' : 'Call:'} +91 {adminMobileNumber}
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
@@ -519,8 +719,9 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             /* Booking List Card(s) - Clicking opens full booking detail */
             <div className="space-y-4">
               {myLeads.map((lead, idx) => {
-                const badge = getStatusBadge(lead.status);
-                const stage = getProgressStage(lead.status);
+                const badge = getStatusBadge(lead.bookingStatus, lead.status);
+                const stage = getProgressStage(lead.bookingStatus, lead.status);
+                const isVerified = Boolean(lead.isCustomerVerified || lead.customerVerificationStatus === 'Verified');
 
                 return (
                   <div
@@ -531,11 +732,17 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                   >
                     {/* Top Row: Status Badge & Booking Date */}
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black border ${badge.bg}`}>
                           {badge.icon}
                           <span>{badge.text}</span>
                         </span>
+                        {isVerified && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                            <span>{isHindi ? 'सत्यापित' : 'Verified'}</span>
+                          </span>
+                        )}
                         <span className="bg-slate-100 text-slate-700 text-xs font-bold px-2.5 py-0.5 rounded-full border border-slate-200">
                           {lead.leadType || 'Porting (MNP)'}
                         </span>
@@ -898,7 +1105,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
       {/* =================================================================== */}
       {/* 1. FULL BOOKING DETAIL MODAL: Opened when clicking on any Booking */}
       {/* =================================================================== */}
-      {selectedLead && (
+      {activeSelectedLead && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-5 shadow-2xl animate-in fade-in zoom-in-95 max-h-[90vh] overflow-y-auto">
             {/* Modal Header */}
@@ -934,7 +1141,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                     {isHindi ? 'वर्तमान स्थिति' : 'Current Status'}
                   </span>
                   <span className="font-black text-slate-900 text-sm">
-                    {selectedLead.bookingStatus || selectedLead.status}
+                    {activeSelectedLead.bookingStatus || activeSelectedLead.status}
                   </span>
                 </div>
                 <div className="text-right">
@@ -942,7 +1149,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                     {isHindi ? 'बुकिंग दिनांक' : 'Booking Date'}
                   </span>
                   <span className="font-bold text-slate-800">
-                    {formatDateTime(selectedLead.createdAt)}
+                    {formatDateTime(activeSelectedLead.createdAt)}
                   </span>
                 </div>
               </div>
@@ -955,31 +1162,31 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                     {isHindi ? 'लाइव प्रगति स्थिति' : 'Progress Stage'}
                   </span>
                   <span className="text-red-600">
-                    {getProgressStage(selectedLead.status)}/5 {isHindi ? 'पूर्ण' : 'Done'}
+                    {getProgressStage(activeSelectedLead.bookingStatus, activeSelectedLead.status)}/5 {isHindi ? 'पूर्ण' : 'Done'}
                   </span>
                 </div>
 
                 <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-gradient-to-r from-red-600 to-emerald-500 rounded-full"
-                    style={{ width: `${(getProgressStage(selectedLead.status) / 5) * 100}%` }}
+                    style={{ width: `${(getProgressStage(activeSelectedLead.bookingStatus, activeSelectedLead.status) / 5) * 100}%` }}
                   ></div>
                 </div>
 
                 <div className="grid grid-cols-5 gap-1 pt-1 text-[10px] font-bold text-center">
-                  <div className={getProgressStage(selectedLead.status) >= 1 ? 'text-emerald-700' : 'text-slate-400'}>
+                  <div className={getProgressStage(activeSelectedLead.bookingStatus, activeSelectedLead.status) >= 1 ? 'text-emerald-700' : 'text-slate-400'}>
                     1. अनुरोध
                   </div>
-                  <div className={getProgressStage(selectedLead.status) >= 2 ? 'text-emerald-700' : 'text-slate-400'}>
+                  <div className={getProgressStage(activeSelectedLead.bookingStatus, activeSelectedLead.status) >= 2 ? 'text-emerald-700' : 'text-slate-400'}>
                     2. UPC
                   </div>
-                  <div className={getProgressStage(selectedLead.status) >= 3 ? 'text-emerald-700' : 'text-slate-400'}>
+                  <div className={getProgressStage(activeSelectedLead.bookingStatus, activeSelectedLead.status) >= 3 ? 'text-emerald-700' : 'text-slate-400'}>
                     3. सिम
                   </div>
-                  <div className={getProgressStage(selectedLead.status) >= 4 ? 'text-emerald-700' : 'text-slate-400'}>
+                  <div className={getProgressStage(activeSelectedLead.bookingStatus, activeSelectedLead.status) >= 4 ? 'text-emerald-700' : 'text-slate-400'}>
                     4. ई-केवाईसी
                   </div>
-                  <div className={getProgressStage(selectedLead.status) >= 5 ? 'text-emerald-700' : 'text-slate-400'}>
+                  <div className={getProgressStage(activeSelectedLead.bookingStatus, activeSelectedLead.status) >= 5 ? 'text-emerald-700' : 'text-slate-400'}>
                     5. सक्रिय
                   </div>
                 </div>
@@ -989,46 +1196,46 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               <div className="grid grid-cols-2 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-100">
                 <div>
                   <span className="text-slate-400 block font-medium">{isHindi ? 'ग्राहक का नाम' : 'Customer Name'}</span>
-                  <span className="font-bold text-slate-900 text-sm">{selectedLead.customerName || profileDetails.name}</span>
+                  <span className="font-bold text-slate-900 text-sm">{activeSelectedLead.customerName || profileDetails.name}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">{isHindi ? 'मोबाइल नंबर' : 'Mobile Number'}</span>
-                  <span className="font-bold text-slate-900 text-sm">{selectedLead.mobileNumber}</span>
+                  <span className="font-bold text-slate-900 text-sm">{activeSelectedLead.mobileNumber}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">{isHindi ? 'मौजूदा ऑपरेटर' : 'Current Operator'}</span>
-                  <span className="font-bold text-red-600 text-sm">{selectedLead.currentOperator} ➔ Vi</span>
+                  <span className="font-bold text-red-600 text-sm">{activeSelectedLead.currentOperator} ➔ Vi</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">{isHindi ? 'कनेक्शन प्रकार' : 'Connection Type'}</span>
-                  <span className="font-bold text-slate-800">{selectedLead.connectionType}</span>
+                  <span className="font-bold text-slate-800">{activeSelectedLead.connectionType}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">{isHindi ? 'चुना गया प्लान' : 'Selected Plan'}</span>
-                  <span className="font-bold text-slate-800">{selectedLead.selectedPlan}</span>
+                  <span className="font-bold text-slate-800">{activeSelectedLead.selectedPlan}</span>
                 </div>
                 <div>
                   <span className="text-slate-400 block font-medium">{isHindi ? 'सिम आवंटन' : 'SIM Allocation'}</span>
-                  <span className="font-bold text-slate-800">{selectedLead.simNumber || 'Doorstep SIM Allocation'}</span>
+                  <span className="font-bold text-slate-800">{activeSelectedLead.simNumber || 'Doorstep SIM Allocation'}</span>
                 </div>
               </div>
 
               {/* UPC Code Box (If available) */}
-              {selectedLead.upcCode && (
+              {activeSelectedLead.upcCode && (
                 <div className="bg-red-50 border border-red-200 p-3.5 rounded-2xl flex items-center justify-between">
                   <div>
                     <span className="text-red-900 font-bold block text-xs">UPC (Unique Porting Code)</span>
                     <span className="text-[11px] text-red-600">
-                      {selectedLead.upcExpiryDate ? `Valid till: ${selectedLead.upcExpiryDate}` : 'Active'}
+                      {activeSelectedLead.upcExpiryDate ? `Valid till: ${activeSelectedLead.upcExpiryDate}` : 'Active'}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-base font-black text-red-700 tracking-wider bg-white px-3 py-1 rounded-xl shadow-2xs border border-red-200">
-                      {selectedLead.upcCode}
+                      {activeSelectedLead.upcCode}
                     </span>
                     <button
                       type="button"
-                      onClick={() => handleCopy(selectedLead.upcCode || '', 'upc')}
+                      onClick={() => handleCopy(activeSelectedLead.upcCode || '', 'upc')}
                       className="p-1.5 rounded-lg bg-white border border-red-200 text-slate-600 hover:text-red-600 cursor-pointer"
                       title="Copy UPC"
                     >
@@ -1042,7 +1249,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
               <div className="space-y-1 text-slate-700 bg-slate-50 p-3.5 rounded-2xl border border-slate-100">
                 <div className="flex items-center justify-between">
                   <span className="text-slate-400 font-medium block">{isHindi ? 'डिलीवरी का पता' : 'Delivery Address'}</span>
-                  {selectedLead.locationCoordinates && (
+                  {activeSelectedLead.locationCoordinates && (
                     <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                       GPS Verified
@@ -1050,22 +1257,22 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
                   )}
                 </div>
                 <p className="font-bold text-slate-900 leading-relaxed">
-                  {selectedLead.taluka
-                    ? `${selectedLead.address || ''}, ${selectedLead.taluka}, ${selectedLead.district}, ${selectedLead.state} - ${selectedLead.pincode}`
-                    : (selectedLead.customerAddress || selectedLead.address || profileDetails.fullAddress)}
+                  {activeSelectedLead.taluka
+                    ? `${activeSelectedLead.address || ''}, ${activeSelectedLead.taluka}, ${activeSelectedLead.district}, ${activeSelectedLead.state} - ${activeSelectedLead.pincode}`
+                    : (activeSelectedLead.customerAddress || activeSelectedLead.address || profileDetails.fullAddress)}
                 </p>
-                {selectedLead.locationCoordinates && (
+                {activeSelectedLead.locationCoordinates && (
                   <p className="text-[11px] text-blue-700 font-mono bg-blue-50 p-2 rounded-xl border border-blue-100 mt-1">
-                    📍 GPS: {selectedLead.locationCoordinates.latitude.toFixed(6)}, {selectedLead.locationCoordinates.longitude.toFixed(6)}
+                    📍 GPS: {activeSelectedLead.locationCoordinates.latitude.toFixed(6)}, {activeSelectedLead.locationCoordinates.longitude.toFixed(6)}
                   </p>
                 )}
               </div>
 
               {/* Remarks */}
-              {selectedLead.remarks && (
+              {activeSelectedLead.remarks && (
                 <div className="p-3 bg-amber-50 rounded-2xl border border-amber-200 text-amber-900">
                   <span className="font-bold block">{isHindi ? 'टिप्पणी (Remarks):' : 'Remarks:'}</span>
-                  <p className="mt-0.5">{selectedLead.remarks}</p>
+                  <p className="mt-0.5">{activeSelectedLead.remarks}</p>
                 </div>
               )}
             </div>
@@ -1074,7 +1281,7 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
             <div className="pt-2 space-y-2">
               <a
                 href={`https://wa.me/91${adminWhatsAppClean}?text=${encodeURIComponent(
-                  `नमस्ते Admin, मेरी Vi बुकिंग (मोबाइल: ${selectedLead.mobileNumber}, स्थिति: ${selectedLead.bookingStatus || selectedLead.status}) के बारे में सहायता चाहिए।`
+                  `नमस्ते Admin, मेरी Vi बुकिंग (मोबाइल: ${activeSelectedLead.mobileNumber}, स्थिति: ${activeSelectedLead.bookingStatus || activeSelectedLead.status}) के बारे में सहायता चाहिए।`
                 )}`}
                 target="_blank"
                 rel="noopener noreferrer"

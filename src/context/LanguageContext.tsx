@@ -1084,9 +1084,11 @@ const LanguageContext = createContext<LanguageContextType | undefined>(undefined
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [language, setLanguageState] = useState<Language>(() => {
     try {
-      const saved = localStorage.getItem(LANGUAGE_STORAGE_KEY);
-      if (saved === 'hi' || saved === 'en') {
-        return saved;
+      if (typeof window !== 'undefined' && 'localStorage' in window) {
+        const saved = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
+        if (saved === 'hi' || saved === 'en') {
+          return saved;
+        }
       }
     } catch (e) {
       console.warn('Could not read saved language from localStorage', e);
@@ -1097,7 +1099,9 @@ export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const setLanguage = (newLang: Language) => {
     setLanguageState(newLang);
     try {
-      localStorage.setItem(LANGUAGE_STORAGE_KEY, newLang);
+      if (typeof window !== 'undefined' && 'localStorage' in window) {
+        window.localStorage.setItem(LANGUAGE_STORAGE_KEY, newLang);
+      }
     } catch (e) {
       console.warn('Could not save language to localStorage', e);
     }

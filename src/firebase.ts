@@ -135,32 +135,55 @@ export function detectPhoneAuthConfig() {
   };
 }
 
-export function getActiveFirebaseConfig(): FirebaseConfigOptions {
-  // 1. Check localStorage override first
-  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Clear out invalid legacy configs
-        if (
-          parsed.projectId === 'vi-sales-mnp' ||
-          parsed.apiKey === 'AIzaSyDbwe2VLxYaT8gPZDIioTbHC6UWtm1D4Qs' ||
-          parsed.appId?.includes(':android:')
-        ) {
-          localStorage.removeItem(STORAGE_KEY);
-        } else if (verifyFirebaseWebConfig(parsed).isValid) {
-          const normalized = normalizeFirebaseConfig(parsed);
-          // Auto-persist normalized version if needed
-          if (normalized.projectId !== parsed.projectId) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-          }
-          return normalized;
-        }
-      }
-    } catch (e) {
-      console.warn('Error reading custom firebase config from localStorage:', e);
+function getSafeStorageItem(key: string): string | null {
+  try {
+    if (typeof window !== 'undefined' && 'localStorage' in window) {
+      return window.localStorage.getItem(key);
     }
+  } catch (_) {}
+  return null;
+}
+
+function setSafeStorageItem(key: string, val: string): void {
+  try {
+    if (typeof window !== 'undefined' && 'localStorage' in window) {
+      window.localStorage.setItem(key, val);
+    }
+  } catch (_) {}
+}
+
+function removeSafeStorageItem(key: string): void {
+  try {
+    if (typeof window !== 'undefined' && 'localStorage' in window) {
+      window.localStorage.removeItem(key);
+    }
+  } catch (_) {}
+}
+
+export function getActiveFirebaseConfig(): FirebaseConfigOptions {
+  // 1. Check localStorage override first safely
+  try {
+    const saved = getSafeStorageItem(STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      // Clear out invalid legacy configs
+      if (
+        parsed.projectId === 'vi-sales-mnp' ||
+        parsed.apiKey === 'AIzaSyDbwe2VLxYaT8gPZDIioTbHC6UWtm1D4Qs' ||
+        parsed.appId?.includes(':android:')
+      ) {
+        removeSafeStorageItem(STORAGE_KEY);
+      } else if (verifyFirebaseWebConfig(parsed).isValid) {
+        const normalized = normalizeFirebaseConfig(parsed);
+        // Auto-persist normalized version if needed
+        if (normalized.projectId !== parsed.projectId) {
+          setSafeStorageItem(STORAGE_KEY, JSON.stringify(normalized));
+        }
+        return normalized;
+      }
+    }
+  } catch (e) {
+    console.warn('Error reading custom firebase config from localStorage:', e);
   }
 
   // 2. Check environment variables
@@ -280,8 +303,10 @@ export function saveCustomFirebaseConfig(config: FirebaseConfigOptions): boolean
     return false;
   }
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-    window.location.reload();
+    setSafeStorageItem(STORAGE_KEY, JSON.stringify(normalized));
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
     return true;
   } catch (e) {
     console.error('Failed to save Firebase config:', e);
@@ -290,6 +315,12 @@ export function saveCustomFirebaseConfig(config: FirebaseConfigOptions): boolean
 }
 
 export function clearCustomFirebaseConfig(): void {
-  localStorage.removeItem(STORAGE_KEY);
-  window.location.reload();
+  try {
+    removeSafeStorageItem(STORAGE_KEY);
+    if (typeof window !== 'undefined') {
+      window.location.reload();
+    }
+  } catch (e) {
+    console.error('Failed to clear Firebase config:', e);
+  }
 }

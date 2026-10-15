@@ -14,8 +14,10 @@ import {
   where 
 } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Lead, LeadFormData, UserRole } from '../types';
-import { isEmailPrimaryOwner } from './userService';
+import { Lead, LeadFormData, UserRole, UserProfile, AdminTerritoryAssignment } from '../types';
+import { isEmailPrimaryOwner, getAllUsers } from './userService';
+import { isLeadAccessibleByAdmin, matchAdminsForTerritory } from './territoryService';
+import { getPortalConfig } from './portalConfigService';
 
 /**
  * Checks whether the given user has Admin or Primary Owner access.
@@ -102,9 +104,18 @@ export function parseDocToLead(docSnap: any): Lead {
     simType: data.simType || 'Physical SIM',
     upcCode: data.upcCode || '',
     upcExpiryDate: data.upcExpiryDate || '',
+    state: data.state || 'Maharashtra',
+    district: data.district || 'Buldhana',
+    taluka: data.taluka || 'Mehkar',
+    village: data.village || data.villageCity || data.cityArea || '',
+    assignedAdminUids: Array.isArray(data.assignedAdminUids)
+      ? data.assignedAdminUids
+      : (data.assignedToUid ? [data.assignedToUid] : []),
+    assignedAdminNames: Array.isArray(data.assignedAdminNames) ? data.assignedAdminNames : [],
+    assignedAt: data.assignedAt || undefined,
     address: addr,
     customerAddress: addr,
-    cityCircle: data.cityCircle || data.circle || 'Delhi NCR',
+    cityCircle: data.cityCircle || data.circle || 'Maharashtra & Goa',
     pincode: data.pincode || '',
     locationCoordinates: data.locationCoordinates || undefined,
     isCustomerVerified: Boolean(data.isCustomerVerified),
@@ -127,18 +138,49 @@ export function parseDocToLead(docSnap: any): Lead {
 
 /**
  * Filter leads based on user role and UID:
- * - Admin and Owner: see all leads
- * - Customer: STRICT ISOLATION - sees ONLY their own submitted requests matching customerUid OR createdByUid
+ * - Super Owner: sees all leads across all territories
+ * - Territory Admin: sees ONLY leads in their assigned village / city / territory
+ * - Customer: STRICT ISOLATION - sees ONLY their own submitted requests
  */
 export function filterLeadsForUser(
   allLeads: Lead[], 
-  user: { uid?: string; role?: UserRole; email?: string; phone?: string; phoneNumber?: string; isAdmin?: boolean; isOwnerAdmin?: boolean } | null
+  user: {
+    uid?: string;
+    role?: UserRole;
+    email?: string | null;
+    phone?: string;
+    phoneNumber?: string;
+    isAdmin?: boolean;
+    isOwnerAdmin?: boolean;
+    isPrimaryOwner?: boolean;
+    isOwner?: boolean;
+    assignedState?: string;
+    assignedDistrict?: string;
+    assignedTaluka?: string;
+    assignedVillage?: string;
+    assignedVillages?: string[];
+    assignedTerritories?: AdminTerritoryAssignment[];
+  } | null
 ): Lead[] {
   if (!user || !user.uid) return [];
-  // Admin and Rubi Owner can see all leads
-  if (isUserAdminOrOwner(user)) {
+  const isSuperOwner = Boolean(
+    user.isOwnerAdmin ||
+    user.isPrimaryOwner ||
+    user.isOwner ||
+    user.role === 'owner' ||
+    (user.email && isEmailPrimaryOwner(user.email))
+  );
+
+  // Super Owner Admin sees all leads across all territories
+  if (isSuperOwner) {
     return allLeads;
   }
+
+  // Territory Admin: strictly filter to assigned village/city/territory
+  if (user.role === 'admin' || user.isAdmin) {
+    return allLeads.filter((lead) => isLeadAccessibleByAdmin(lead, user));
+  }
+
   const cleanUserPhone = (user.phoneNumber || user.phone || '').replace(/\D/g, '').slice(-10);
   const userEmail = (user.email || '').toLowerCase().trim();
 
@@ -158,14 +200,30 @@ export function filterLeadsForUser(
 
 /**
  * Subscribes in real-time to the Firestore 'leads' collection:
- * - Admin and Owner: Listens to the entire collection to manage all customer bookings.
- *   Also fetches via getDocs immediately to eliminate initial count delays.
- * - Customer: STRICT ISOLATION - Listens directly to queries where customerUid == user.uid
- *   and where createdByUid == user.uid. Merges results in memory and emits live updates.
- * - Always reads live from Firestore; does not use localStorage as primary database.
+ * - Super Owner: Listens to entire collection and manages all customer bookings nationwide.
+ * - Territory Admin: Strictly scoped to bookings matching their assigned village / territory.
+ * - Customer: STRICT ISOLATION - Listens directly to queries matching customer UID.
+ * - Emits live reactive updates whenever any new booking or status change occurs.
  */
 export function subscribeToLeads(
-  user: { uid?: string; role?: UserRole; email?: string; phone?: string; phoneNumber?: string; displayName?: string; isAdmin?: boolean; isOwnerAdmin?: boolean } | null,
+  user: {
+    uid?: string;
+    role?: UserRole;
+    email?: string | null;
+    phone?: string;
+    phoneNumber?: string;
+    displayName?: string;
+    isAdmin?: boolean;
+    isOwnerAdmin?: boolean;
+    isPrimaryOwner?: boolean;
+    isOwner?: boolean;
+    assignedState?: string;
+    assignedDistrict?: string;
+    assignedTaluka?: string;
+    assignedVillage?: string;
+    assignedVillages?: string[];
+    assignedTerritories?: AdminTerritoryAssignment[];
+  } | null,
   onData: (leads: Lead[], isFromFirestore: boolean) => void,
   onError: (error: any) => void
 ): () => void {
@@ -175,11 +233,32 @@ export function subscribeToLeads(
   }
 
   const isAdminAccess = isUserAdminOrOwner(user);
+  const isSuperOwner = Boolean(
+    user.isOwnerAdmin ||
+    user.isPrimaryOwner ||
+    user.isOwner ||
+    user.role === 'owner' ||
+    (user.email && isEmailPrimaryOwner(user.email))
+  );
 
   try {
     const leadsCollection = collection(db, 'leads');
     const unsubs: Array<() => void> = [];
     const leadsMap = new Map<string, Lead>();
+
+    const cleanUserPhone = (
+      user.phoneNumber ||
+      user.phone ||
+      (user.email && /^\d{10}@/.test(user.email) ? user.email.slice(0, 10) : '')
+    )
+      .replace(/\D/g, '')
+      .slice(-10);
+
+    const isSystemSyncDoc = (docSnap: any) => {
+      if (docSnap.id.startsWith('system_')) return true;
+      const d = docSnap.data();
+      return Boolean(d?.isSystemConfig);
+    };
 
     const emitCurrentLeads = (isLive: boolean) => {
       const items = Array.from(leadsMap.values());
@@ -189,15 +268,27 @@ export function subscribeToLeads(
         return timeB - timeA;
       });
 
-      // Strict Customer Data Isolation: Customers can NEVER see another customer's data
-      // Primary Owner & Admins see ALL customer bookings across Firestore
-      const secureItems = isAdminAccess
-        ? items
-        : items.filter((lead) => 
-            lead.customerUid === user.uid || 
-            lead.createdByUid === user.uid || 
-            (user.email && lead.customerEmail && lead.customerEmail.toLowerCase() === user.email.toLowerCase())
+      // Strict Data Boundary:
+      // - Super Admin sees ALL customer bookings across India
+      // - Territory Admin sees ONLY bookings in their assigned village/city/territory
+      // - Customers see ONLY their own bookings
+      let secureItems: Lead[];
+      if (isSuperOwner) {
+        secureItems = items;
+      } else if (isAdminAccess) {
+        secureItems = items.filter((lead) => isLeadAccessibleByAdmin(lead, user));
+      } else {
+        secureItems = items.filter((lead) => {
+          const leadPhone = (lead.mobileNumber || '').replace(/\D/g, '').slice(-10);
+          const matchesPhone = Boolean(cleanUserPhone && cleanUserPhone.length === 10 && leadPhone === cleanUserPhone);
+          return (
+            lead.customerUid === user.uid ||
+            lead.createdByUid === user.uid ||
+            (user.email && lead.customerEmail && lead.customerEmail.toLowerCase() === user.email.toLowerCase()) ||
+            matchesPhone
           );
+        });
+      }
 
       onData(secureItems, isLive);
     };
@@ -208,7 +299,9 @@ export function subscribeToLeads(
         .then((snapshot) => {
           leadsMap.clear();
           snapshot.forEach((docSnap) => {
-            leadsMap.set(docSnap.id, parseDocToLead(docSnap));
+            if (!isSystemSyncDoc(docSnap)) {
+              leadsMap.set(docSnap.id, parseDocToLead(docSnap));
+            }
           });
           emitCurrentLeads(true);
         })
@@ -222,7 +315,9 @@ export function subscribeToLeads(
         (snapshot: QuerySnapshot<DocumentData>) => {
           leadsMap.clear();
           snapshot.forEach((docSnap) => {
-            leadsMap.set(docSnap.id, parseDocToLead(docSnap));
+            if (!isSystemSyncDoc(docSnap)) {
+              leadsMap.set(docSnap.id, parseDocToLead(docSnap));
+            }
           });
           emitCurrentLeads(true);
         },
@@ -237,9 +332,13 @@ export function subscribeToLeads(
       const uidMap = new Map<string, Lead>();
       const creatorMap = new Map<string, Lead>();
       const emailMap = new Map<string, Lead>();
+      const phoneMap = new Map<string, Lead>();
+      const altPhoneMap = new Map<string, Lead>();
 
       const emitCustomerLeads = (isLive: boolean) => {
         const merged = new Map<string, Lead>();
+        for (const [id, lead] of altPhoneMap.entries()) merged.set(id, lead);
+        for (const [id, lead] of phoneMap.entries()) merged.set(id, lead);
         for (const [id, lead] of emailMap.entries()) merged.set(id, lead);
         for (const [id, lead] of creatorMap.entries()) merged.set(id, lead);
         for (const [id, lead] of uidMap.entries()) merged.set(id, lead);
@@ -251,13 +350,18 @@ export function subscribeToLeads(
           return timeB - timeA;
         });
 
-        // Strict customer data boundary: only ever see bookings matching own UID or own email
+        // Strict customer data boundary: only ever see bookings matching own UID, own email, or own verified mobile number
         const userEmail = (user.email || '').toLowerCase().trim();
-        const secureItems = items.filter((lead) => 
-          lead.customerUid === user.uid || 
-          lead.createdByUid === user.uid || 
-          (userEmail && lead.customerEmail && lead.customerEmail.toLowerCase().trim() === userEmail)
-        );
+        const secureItems = items.filter((lead) => {
+          const leadPhone = (lead.mobileNumber || '').replace(/\D/g, '').slice(-10);
+          const matchesPhone = Boolean(cleanUserPhone && cleanUserPhone.length === 10 && leadPhone === cleanUserPhone);
+          return (
+            lead.customerUid === user.uid ||
+            lead.createdByUid === user.uid ||
+            (userEmail && lead.customerEmail && lead.customerEmail.toLowerCase().trim() === userEmail) ||
+            matchesPhone
+          );
+        });
 
         onData(secureItems, isLive);
       };
@@ -265,7 +369,9 @@ export function subscribeToLeads(
       // 1. Primary Query: where customerUid == authenticated UID
       const qUid = query(leadsCollection, where('customerUid', '==', user.uid));
       getDocs(qUid).then((snap) => {
-        snap.forEach((docSnap) => uidMap.set(docSnap.id, parseDocToLead(docSnap)));
+        snap.forEach((docSnap) => {
+          if (!isSystemSyncDoc(docSnap)) uidMap.set(docSnap.id, parseDocToLead(docSnap));
+        });
         emitCustomerLeads(true);
       }).catch(() => {});
 
@@ -274,7 +380,9 @@ export function subscribeToLeads(
         (snapshot: QuerySnapshot<DocumentData>) => {
           uidMap.clear();
           snapshot.forEach((docSnap) => {
-            uidMap.set(docSnap.id, parseDocToLead(docSnap));
+            if (!isSystemSyncDoc(docSnap)) {
+              uidMap.set(docSnap.id, parseDocToLead(docSnap));
+            }
           });
           emitCustomerLeads(true);
         },
@@ -288,7 +396,9 @@ export function subscribeToLeads(
       // 2. Creator Query: where createdByUid == authenticated UID
       const qCreator = query(leadsCollection, where('createdByUid', '==', user.uid));
       getDocs(qCreator).then((snap) => {
-        snap.forEach((docSnap) => creatorMap.set(docSnap.id, parseDocToLead(docSnap)));
+        snap.forEach((docSnap) => {
+          if (!isSystemSyncDoc(docSnap)) creatorMap.set(docSnap.id, parseDocToLead(docSnap));
+        });
         emitCustomerLeads(true);
       }).catch(() => {});
 
@@ -297,7 +407,9 @@ export function subscribeToLeads(
         (snapshot: QuerySnapshot<DocumentData>) => {
           creatorMap.clear();
           snapshot.forEach((docSnap) => {
-            creatorMap.set(docSnap.id, parseDocToLead(docSnap));
+            if (!isSystemSyncDoc(docSnap)) {
+              creatorMap.set(docSnap.id, parseDocToLead(docSnap));
+            }
           });
           emitCustomerLeads(true);
         },
@@ -312,7 +424,9 @@ export function subscribeToLeads(
         const cleanUserEmail = user.email.toLowerCase().trim();
         const qEmail = query(leadsCollection, where('customerEmail', '==', cleanUserEmail));
         getDocs(qEmail).then((snap) => {
-          snap.forEach((docSnap) => emailMap.set(docSnap.id, parseDocToLead(docSnap)));
+          snap.forEach((docSnap) => {
+            if (!isSystemSyncDoc(docSnap)) emailMap.set(docSnap.id, parseDocToLead(docSnap));
+          });
           emitCustomerLeads(true);
         }).catch(() => {});
 
@@ -321,7 +435,9 @@ export function subscribeToLeads(
           (snapshot: QuerySnapshot<DocumentData>) => {
             emailMap.clear();
             snapshot.forEach((docSnap) => {
-              emailMap.set(docSnap.id, parseDocToLead(docSnap));
+              if (!isSystemSyncDoc(docSnap)) {
+                emailMap.set(docSnap.id, parseDocToLead(docSnap));
+              }
             });
             emitCustomerLeads(true);
           },
@@ -330,6 +446,59 @@ export function subscribeToLeads(
           }
         );
         unsubs.push(unsubEmail);
+      }
+
+      // 4. Mobile Number Query so bookings linked to customer's 10-digit mobile number sync in real-time
+      if (cleanUserPhone && cleanUserPhone.length === 10) {
+        const qPhone = query(leadsCollection, where('mobileNumber', '==', cleanUserPhone));
+        getDocs(qPhone).then((snap) => {
+          snap.forEach((docSnap) => {
+            if (!isSystemSyncDoc(docSnap)) phoneMap.set(docSnap.id, parseDocToLead(docSnap));
+          });
+          emitCustomerLeads(true);
+        }).catch(() => {});
+
+        const unsubPhone = onSnapshot(
+          qPhone,
+          (snapshot: QuerySnapshot<DocumentData>) => {
+            phoneMap.clear();
+            snapshot.forEach((docSnap) => {
+              if (!isSystemSyncDoc(docSnap)) {
+                phoneMap.set(docSnap.id, parseDocToLead(docSnap));
+              }
+            });
+            emitCustomerLeads(true);
+          },
+          (error) => {
+            console.warn('Customer Phone onSnapshot notice:', error?.message);
+          }
+        );
+        unsubs.push(unsubPhone);
+
+        const qPhoneField = query(leadsCollection, where('phone', '==', cleanUserPhone));
+        getDocs(qPhoneField).then((snap) => {
+          snap.forEach((docSnap) => {
+            if (!isSystemSyncDoc(docSnap)) altPhoneMap.set(docSnap.id, parseDocToLead(docSnap));
+          });
+          emitCustomerLeads(true);
+        }).catch(() => {});
+
+        const unsubPhoneField = onSnapshot(
+          qPhoneField,
+          (snapshot: QuerySnapshot<DocumentData>) => {
+            altPhoneMap.clear();
+            snapshot.forEach((docSnap) => {
+              if (!isSystemSyncDoc(docSnap)) {
+                altPhoneMap.set(docSnap.id, parseDocToLead(docSnap));
+              }
+            });
+            emitCustomerLeads(true);
+          },
+          (error) => {
+            console.warn('Customer Phone field onSnapshot notice:', error?.message);
+          }
+        );
+        unsubs.push(unsubPhoneField);
       }
     }
 
@@ -356,23 +525,14 @@ export function subscribeToLeads(
  *   customerEmail, assignedTo
  * Plus backward compatibility fields for complete UI consistency.
  */
-export const SERVICE_AREA_ERROR = 'Sorry, VI Porting Home Service is currently available only in Mehkar Taluka, Buldhana District, Maharashtra - PIN 443301.';
+export const SERVICE_AREA_ERROR = 'कृपया राज्य, जिला और तहसील/शहर का चयन करें। (Please select State, District, and Taluka/City).';
 
 export function validateServiceArea(state?: string, district?: string, taluka?: string, pincode?: string): boolean {
-  const s = (state || '').trim().toLowerCase();
-  const d = (district || '').trim().toLowerCase();
-  const t = (taluka || '').trim().toLowerCase();
-  const p = (pincode || '').trim();
-
-  // State must be Maharashtra
-  if (s !== 'maharashtra') return false;
-  // District must be Buldhana
-  if (d !== 'buldhana') return false;
-  // Taluka must be Mehkar
-  if (t !== 'mehkar') return false;
-  // PIN code must be 443301
-  if (p !== '443301') return false;
-
+  const s = (state || '').trim();
+  const d = (district || '').trim();
+  const t = (taluka || '').trim();
+  // Valid as long as state and district are provided
+  if (!s || !d) return false;
   return true;
 }
 
@@ -387,11 +547,12 @@ export async function addLead(
     throw new Error('डेटाबेस कनेक्टेड नहीं है (Firestore not initialized)');
   }
 
-  // 1. Service Area Restriction Validation
-  const reqState = (formData.state || '').trim();
-  const reqDistrict = (formData.district || '').trim();
-  const reqTaluka = (formData.taluka || '').trim();
-  const reqPincode = (formData.pincode || '').trim();
+  // 1. Service Area Validation
+  const reqState = (formData.state || 'Maharashtra').trim();
+  const reqDistrict = (formData.district || 'Buldhana').trim();
+  const reqTaluka = (formData.taluka || 'Mehkar').trim();
+  const reqVillage = (formData.village || '').trim();
+  const reqPincode = (formData.pincode || '443301').trim();
 
   if (!validateServiceArea(reqState, reqDistrict, reqTaluka, reqPincode)) {
     throw new Error(SERVICE_AREA_ERROR);
@@ -402,6 +563,43 @@ export async function addLead(
   const currentName = (user.displayName || currentEmail.split('@')[0] || 'Customer').trim();
   const isCustomer = !isUserAdminOrOwner(user);
 
+  // 2. Auto-match all active admins assigned to this village/city according to Owner-configured rules
+  let assignedAdminUids: string[] = Array.isArray(formData.assignedAdminUids) ? [...formData.assignedAdminUids] : [];
+  let assignedAdminNames: string[] = Array.isArray(formData.assignedAdminNames) ? [...formData.assignedAdminNames] : [];
+
+  if (assignedAdminUids.length === 0) {
+    try {
+      const allUsers = await getAllUsers();
+      const matched = matchAdminsForTerritory(reqState, reqDistrict, reqTaluka, reqVillage, allUsers);
+      if (matched.length > 0) {
+        let selectedAdmins = matched;
+        try {
+          const config = await getPortalConfig();
+          const mode = config.territoryRules?.multiAdminMode || 'shared_pool';
+          if (mode === 'round_robin' && matched.length > 1) {
+            // Owner designated rule: Round Robin rotation among admins assigned to this village
+            const rotationIdx = Math.floor(Math.random() * matched.length);
+            selectedAdmins = [matched[rotationIdx]];
+          } else if (mode === 'primary_admin' && matched.length > 1) {
+            // Owner designated rule: Primary / First Admin assigned to this village
+            selectedAdmins = [matched[0]];
+          }
+        } catch (ruleErr) {
+          console.warn('Owner territory rule fallback notice:', ruleErr);
+        }
+
+        assignedAdminUids = selectedAdmins.map((a) => a.uid);
+        assignedAdminNames = selectedAdmins.map((a) => a.displayName || a.email || 'Admin');
+      }
+    } catch (matchErr) {
+      console.warn('Auto-match admins warning:', matchErr);
+    }
+  }
+
+  const assignedLabel = assignedAdminNames.length > 0
+    ? assignedAdminNames.join(', ')
+    : (formData.assignedTo && formData.assignedTo !== 'Unassigned' ? formData.assignedTo : 'Unassigned');
+
   // Generate unique document reference
   const leadsCollection = collection(db, 'leads');
   const newDocRef = doc(leadsCollection);
@@ -411,15 +609,17 @@ export async function addLead(
   const custName = (formData.customerName || '').trim();
   const mobile = (formData.mobileNumber || '').replace(/\D/g, '').trim();
   const altNumber = (formData.alternateNumber || '').replace(/\D/g, '').trim();
-  const addr = (formData.address || formData.customerAddress || '').trim();
-  const pin = '443301';
+  const rawAddr = (formData.address || formData.customerAddress || '').trim();
+  const formattedAddress = rawAddr
+    ? (rawAddr.includes(reqVillage) ? rawAddr : `${rawAddr}, ${reqVillage ? `${reqVillage}, ` : ''}${reqTaluka}, ${reqDistrict}, ${reqState}`)
+    : [reqVillage, reqTaluka, reqDistrict, `${reqState}${reqPincode ? ` - ${reqPincode}` : ''}`].filter(Boolean).join(', ');
+
   const oper = formData.currentOperator || 'Airtel';
   const sim = formData.simType || 'Physical SIM';
   const st = formData.status || 'New';
   const createdDate = new Date().toISOString();
   const custUid = isCustomer ? currentUid : (formData.customerUid || currentUid);
   const custEmail = isCustomer ? currentEmail : (formData.customerEmail || currentEmail || '');
-  const assigned = formData.assignedTo || 'Unassigned';
 
   const docPayload: Record<string, any> = {
     // 14 MANDATORY FIELDS
@@ -427,8 +627,8 @@ export async function addLead(
     customerName: custName,
     mobileNumber: mobile,
     alternateNumber: altNumber,
-    address: addr,
-    pincode: pin,
+    address: formattedAddress,
+    pincode: reqPincode,
     currentOperator: oper,
     requestType: reqType,
     simType: sim,
@@ -436,21 +636,25 @@ export async function addLead(
     createdAt: createdDate,
     customerUid: custUid,
     customerEmail: custEmail,
-    assignedTo: assigned,
+    assignedTo: assignedLabel,
 
-    // Service Area Fields
-    state: 'Maharashtra',
-    district: 'Buldhana',
-    taluka: 'Mehkar',
+    // Village-wise & City-wise Territory Assignment fields
+    state: reqState,
+    district: reqDistrict,
+    taluka: reqTaluka,
+    village: reqVillage,
+    assignedAdminUids,
+    assignedAdminNames,
+    assignedAt: assignedAdminUids.length > 0 ? createdDate : undefined,
 
     // Backward-compatibility fields for UI views & sorting
     leadType: reqType,
-    customerAddress: addr ? `${addr}, Mehkar, Buldhana, Maharashtra - 443301` : 'Mehkar, Buldhana, Maharashtra - 443301',
+    customerAddress: formattedAddress,
     connectionType: formData.connectionType || 'Prepaid',
     selectedPlan: formData.selectedPlan || 'Vi Standard Plan',
     bookingStatus: formData.bookingStatus || 'Booked',
     bookingCount: Number(formData.bookingCount) || 1,
-    cityCircle: 'Maharashtra & Goa',
+    cityCircle: formData.cityCircle || (reqState === 'Maharashtra' ? 'Maharashtra & Goa' : reqState),
     remarks: (formData.remarks || '').trim(),
     upcCode: (formData.upcCode || '').trim().toUpperCase(),
     upcExpiryDate: formData.upcExpiryDate || '',
@@ -496,6 +700,7 @@ export async function getAllLeadsOnce(): Promise<Lead[]> {
   const snapshot = await getDocs(collection(db, 'leads'));
   const list: Lead[] = [];
   snapshot.forEach((docSnap) => {
+    if (docSnap.id.startsWith('system_') || docSnap.data()?.isSystemConfig) return;
     list.push(parseDocToLead(docSnap));
   });
   list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -524,6 +729,34 @@ export async function updateLead(
     ...formData,
     updatedAt: new Date().toISOString(),
   };
+
+  // Synchronize bookingStatus and status so Admin updates immediately reflect in Customer Portal tracker
+  if (rawUpdatePayload.bookingStatus && !rawUpdatePayload.status) {
+    const bs = rawUpdatePayload.bookingStatus;
+    if (bs === 'Completed') rawUpdatePayload.status = 'Completed';
+    else if (bs === 'Rejected' || bs === 'Cancelled') rawUpdatePayload.status = 'Rejected';
+    else if (bs === 'Pending') rawUpdatePayload.status = 'Pending';
+    else if (bs === 'Verified') rawUpdatePayload.status = 'UPC Generated';
+    else if (bs === 'In Process') rawUpdatePayload.status = 'SIM Dispatched';
+  } else if (rawUpdatePayload.status && !rawUpdatePayload.bookingStatus) {
+    const st = rawUpdatePayload.status;
+    if (st === 'Completed') rawUpdatePayload.bookingStatus = 'Completed';
+    else if (st === 'Rejected') rawUpdatePayload.bookingStatus = 'Rejected';
+    else if (st === 'Pending') rawUpdatePayload.bookingStatus = 'Pending';
+    else if (st === 'UPC Generated') rawUpdatePayload.bookingStatus = 'Verified';
+    else if (st === 'SIM Dispatched' || st === 'Porting Scheduled') rawUpdatePayload.bookingStatus = 'In Process';
+    else if (st === 'New') rawUpdatePayload.bookingStatus = 'Booked';
+  }
+
+  // Also mirror remarks/notes and mobileNumber/phone if updated
+  if (rawUpdatePayload.remarks !== undefined && rawUpdatePayload.notes === undefined) {
+    rawUpdatePayload.notes = rawUpdatePayload.remarks;
+  } else if (rawUpdatePayload.notes !== undefined && rawUpdatePayload.remarks === undefined) {
+    rawUpdatePayload.remarks = rawUpdatePayload.notes;
+  }
+  if (rawUpdatePayload.mobileNumber && !rawUpdatePayload.phone) {
+    rawUpdatePayload.phone = rawUpdatePayload.mobileNumber;
+  }
 
   // Prevent modifying immutable ownership fields
   delete rawUpdatePayload.customerUid;
