@@ -25,7 +25,8 @@ import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { CustomConfirmationResult } from '../services/phoneAuthService';
 import { ConfirmationResult } from 'firebase/auth';
-import { PRIMARY_OWNER_EMAIL, isEmailPrimaryOwner } from '../services/userService';
+import { PRIMARY_OWNER_EMAIL, isEmailPrimaryOwner, getLocalAdminRegistry, getAllUsers } from '../services/userService';
+import { UserProfile } from '../types';
 
 interface AuthScreenProps {
   onOpenConfig: () => void;
@@ -146,6 +147,25 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
     return () => clearTimeout(timer);
   }, [adminCountdown]);
+
+  const [registeredAdmins, setRegisteredAdmins] = useState<UserProfile[]>([]);
+
+  // Load owner-created registered admins
+  useEffect(() => {
+    try {
+      const local = getLocalAdminRegistry().filter((u) => u.role === 'admin' && !u.isDeactivated);
+      if (local.length > 0) {
+        setRegisteredAdmins(local);
+      }
+    } catch (_) {}
+
+    getAllUsers().then((list) => {
+      const activeAdmins = list.filter((u) => u.role === 'admin' && !u.isDeactivated);
+      if (activeAdmins.length > 0) {
+        setRegisteredAdmins(activeAdmins);
+      }
+    }).catch(() => {});
+  }, [activePortal]);
 
   // Clear errors when switching tabs
   useEffect(() => {
@@ -1093,6 +1113,48 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 {/* ADMIN OPTION 1: EMAIL & PASSWORD */}
                 {adminAuthMode === 'email' && (
                   <form onSubmit={handleAdminEmailSubmit} className="space-y-3">
+                    {/* Quick Admin Selector / Simulator */}
+                    {registeredAdmins.length > 0 && (
+                      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-black text-slate-800 flex items-center gap-1">
+                            <ShieldCheck className="w-3.5 h-3.5 text-red-600" />
+                            <span>{isHindi ? 'अधिकृत Admin त्वरित चयन (Simulator):' : 'Authorized Admins (Quick Select):'}</span>
+                          </span>
+                          <span className="text-[10px] bg-red-100 text-red-800 font-bold px-2 py-0.5 rounded-full">
+                            {registeredAdmins.length} {isHindi ? 'उपलब्ध' : 'Active'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {registeredAdmins.map((adm) => {
+                            const isSelected = adminEmail.toLowerCase() === (adm.email || '').toLowerCase();
+                            return (
+                              <button
+                                key={adm.uid}
+                                type="button"
+                                onClick={() => {
+                                  setAdminEmail(adm.email || '');
+                                  setLocalError(null);
+                                }}
+                                className={`text-[11px] px-2.5 py-1 rounded-xl font-bold flex items-center gap-1 cursor-pointer transition-all border ${
+                                  isSelected
+                                    ? 'bg-red-600 text-white border-red-700 shadow-xs scale-102'
+                                    : 'bg-white text-slate-800 border-slate-200 hover:border-red-300 hover:bg-red-50/50'
+                                }`}
+                              >
+                                <span>{adm.displayName || adm.email?.split('@')[0]}</span>
+                                {adm.assignedVillage && (
+                                  <span className={`text-[9px] px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                                    🏡 {adm.assignedVillage}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     <div>
                       <div className="flex items-center justify-between mb-1">
                         <label className="block text-xs font-bold text-slate-700">

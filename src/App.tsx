@@ -66,7 +66,8 @@ function MainAppContent() {
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
 
   useEffect(() => {
-    if (isAdmin) {
+    const isOwner = isOwnerAdmin || Boolean(user?.email && isEmailPrimaryOwner(user.email));
+    if (isOwner) {
       const unsub = subscribeToAllUsers((uList) => {
         if (uList) setAllUsers(uList);
       });
@@ -74,7 +75,7 @@ function MainAppContent() {
         try { unsub(); } catch (_) {}
       };
     }
-  }, [isAdmin]);
+  }, [isOwnerAdmin, user]);
 
   const customerUsers = useMemo(() => {
     return allUsers.filter(

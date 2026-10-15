@@ -13,37 +13,129 @@ import {
 } from 'firebase/firestore';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut as secondarySignOut } from 'firebase/auth';
-import { db, DEFAULT_FIREBASE_CONFIG, getActiveFirebaseConfig, normalizeFirebaseConfig } from '../firebase';
+import { db, auth, DEFAULT_FIREBASE_CONFIG, getActiveFirebaseConfig, normalizeFirebaseConfig } from '../firebase';
 import { formatAuthError } from './firebaseAuthService';
 import { UserProfile, UserRole, AdminApprovalStatus, AdminTerritoryAssignment } from '../types';
 export { assignTerritoryToAdmin, removeTerritoryFromAdmin, matchAdminsForTerritory, isLeadAccessibleByAdmin } from './territoryService';
 
 export const PRIMARY_OWNER_EMAIL = 'raheema62038@gmail.com';
 
-const TIMEOUT_MS = 6000;
+const TIMEOUT_MS = 20000;
+const LOCAL_ADMINS_STORAGE_KEY = 'vi_admin_registry_backup';
 
-function cleanPayloadForFirestore(payload: Record<string, any>): Record<string, any> {
-  const clean: Record<string, any> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (value !== undefined && value !== null) {
-      if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (trimmed.length > 0) {
-          clean[key] = trimmed;
-        }
-      } else {
-        clean[key] = value;
-      }
+export function getLocalAdminRegistry(): UserProfile[] {
+  try {
+    if (typeof window !== 'undefined' && 'localStorage' in window) {
+      const raw = window.localStorage.getItem(LOCAL_ADMINS_STORAGE_KEY);
+      if (raw) return JSON.parse(raw);
     }
-  }
-  return clean;
+  } catch (_) {}
+  return [];
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallbackValue: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallbackValue), timeoutMs)),
-  ]);
+export function saveToLocalAdminRegistry(admin: UserProfile): void {
+  try {
+    if (typeof window !== 'undefined' && 'localStorage' in window && admin?.uid) {
+      const list = getLocalAdminRegistry().filter((a) => a.uid !== admin.uid);
+      list.push(admin);
+      window.localStorage.setItem(LOCAL_ADMINS_STORAGE_KEY, JSON.stringify(list));
+    }
+  } catch (_) {}
+}
+
+export function removeFromLocalAdminRegistry(uid: string): void {
+  try {
+    if (typeof window !== 'undefined' && 'localStorage' in window) {
+      const list = getLocalAdminRegistry().filter((a) => a.uid !== uid);
+      window.localStorage.setItem(LOCAL_ADMINS_STORAGE_KEY, JSON.stringify(list));
+    }
+  } catch (_) {}
+}
+
+export function cleanPayloadForFirestore(obj: any): any {
+  if (obj === undefined) return null;
+  if (obj === null) return null;
+  if (Array.isArray(obj)) {
+    return obj
+      .map(cleanPayloadForFirestore)
+      .filter((item) => item !== undefined);
+  }
+  if (typeof obj === 'object') {
+    const clean: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        clean[key] = cleanPayloadForFirestore(value);
+      }
+    }
+    return clean;
+  }
+  if (typeof obj === 'string') {
+    return obj.trim();
+  }
+  return obj;
+}
+
+export function convertObjectToFirestoreFields(obj: any): Record<string, any> {
+  const fields: Record<string, any> = {};
+  if (!obj || typeof obj !== 'object') return fields;
+
+  for (const [key, val] of Object.entries(obj)) {
+    if (val === undefined || val === null) {
+      fields[key] = { nullValue: null };
+    } else if (typeof val === 'string') {
+      fields[key] = { stringValue: val };
+    } else if (typeof val === 'boolean') {
+      fields[key] = { booleanValue: val };
+    } else if (typeof val === 'number') {
+      fields[key] = Number.isInteger(val) ? { integerValue: String(val) } : { doubleValue: val };
+    } else if (Array.isArray(val)) {
+      fields[key] = {
+        arrayValue: {
+          values: val.map((v) => {
+            if (typeof v === 'string') return { stringValue: v };
+            if (typeof v === 'boolean') return { booleanValue: v };
+            if (typeof v === 'number') return { integerValue: String(v) };
+            if (typeof v === 'object' && v !== null) {
+              return { mapValue: { fields: convertObjectToFirestoreFields(v) } };
+            }
+            return { nullValue: null };
+          }),
+        },
+      };
+    } else if (typeof val === 'object') {
+      fields[key] = { mapValue: { fields: convertObjectToFirestoreFields(val) } };
+    }
+  }
+  return fields;
+}
+
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMsg?: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(errorMsg || `Operation timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+
+    promise.then(
+      (val) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          resolve(val);
+        }
+      },
+      (err) => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        }
+      }
+    );
+  });
 }
 
 /**
@@ -99,8 +191,7 @@ export function parseUserDataToProfile(
   emailHint?: string,
   phoneHint?: string
 ): UserProfile {
-  if (!data) data = {};
-  const userEmail = data.email || emailHint || '';
+  const userEmail = (data.email || data.customerEmail || data.userEmail || emailHint || '').trim();
   const isOwner = Boolean(
     isEmailPrimaryOwner(userEmail) ||
     (emailHint && isEmailPrimaryOwner(emailHint)) ||
@@ -179,65 +270,95 @@ export function parseUserDataToProfile(
  * Fetch a single user profile by UID from Firestore.
  */
 export async function getUserProfile(uid: string, emailHint?: string, phoneHint?: string): Promise<UserProfile | null> {
-  if (!db || !uid) return null;
-  try {
-    const isOwnerByEmail = isEmailPrimaryOwner(emailHint);
-    const userRef = doc(db, 'users', uid);
-    const snap = await withTimeout(getDoc(userRef), TIMEOUT_MS, null);
+  if (!uid && !emailHint) return null;
+  const cleanEmail = (emailHint || '').trim().toLowerCase();
 
-    if (snap && snap.exists()) {
-      return parseUserDataToProfile(snap.data(), uid, emailHint, phoneHint);
-    } else if (isOwnerByEmail) {
-      // Primary owner's first access before document creation
-      const now = new Date().toISOString();
-      const ownerProfile: UserProfile = {
-        uid,
-        customerUid: uid,
-        email: PRIMARY_OWNER_EMAIL,
-        displayName: 'Primary Owner Admin (Master)',
-        role: 'owner',
-        status: 'approved',
-        isPrimaryOwner: true,
-        isOwner: true,
-        isDeactivated: false,
-        phone: '',
-        createdAt: now,
-        lastLoginAt: now,
-        assignedCircle: 'National HQ (Owner)',
-        assignedState: 'All States (National)',
-        assignedDistrict: 'All Districts',
-        assignedTaluka: 'All Talukas',
-        assignedVillage: 'All Villages',
-      };
-      try {
-        await setDoc(userRef, ownerProfile, { merge: true });
-      } catch (e) {
-        console.warn('Auto-provision owner doc warning:', e);
-      }
-      return ownerProfile;
-    } else if (emailHint && emailHint.trim()) {
-      // Preserve existing Firestore customer data if registered previously under email
-      try {
-        const cleanEmail = emailHint.trim().toLowerCase();
-        const usersCol = collection(db, 'users');
-        const qSnap = await withTimeout(
-          getDocs(query(usersCol, where('email', '==', cleanEmail))),
-          TIMEOUT_MS,
-          null
-        );
-        if (qSnap && !qSnap.empty) {
-          const docFound = qSnap.docs[0];
-          const preservedProfile = parseUserDataToProfile(docFound.data(), uid, cleanEmail, phoneHint);
-          await setDoc(userRef, preservedProfile, { merge: true }).catch(() => {});
-          return preservedProfile;
+  // 1. First check if it's primary owner by email
+  const isOwnerByEmail = isEmailPrimaryOwner(cleanEmail);
+
+  if (db && uid) {
+    try {
+      const userRef = doc(db, 'users', uid);
+      const snap = await withTimeout(getDoc(userRef), TIMEOUT_MS, null);
+
+      if (snap && snap.exists()) {
+        const prof = parseUserDataToProfile(snap.data(), uid, emailHint, phoneHint);
+        if (prof.role === 'admin') {
+          saveToLocalAdminRegistry(prof);
         }
-      } catch (err) {
-        console.warn('Fallback lookup by email notice:', err);
+        return prof;
+      } else if (isOwnerByEmail) {
+        // Primary owner's first access before document creation
+        const now = new Date().toISOString();
+        const ownerProfile: UserProfile = {
+          uid,
+          customerUid: uid,
+          email: PRIMARY_OWNER_EMAIL,
+          displayName: 'Primary Owner Admin (Master)',
+          role: 'owner',
+          status: 'approved',
+          isPrimaryOwner: true,
+          isOwner: true,
+          isDeactivated: false,
+          phone: '',
+          createdAt: now,
+          lastLoginAt: now,
+          assignedCircle: 'National HQ (Owner)',
+          assignedState: 'All States (National)',
+          assignedDistrict: 'All Districts',
+          assignedTaluka: 'All Talukas',
+          assignedVillage: 'All Villages',
+        };
+        try {
+          await setDoc(userRef, ownerProfile, { merge: true });
+        } catch (e) {
+          console.warn('Auto-provision owner doc warning:', e);
+        }
+        return ownerProfile;
+      } else if (cleanEmail) {
+        // Query users collection by email
+        try {
+          const usersCol = collection(db, 'users');
+          const qSnap = await withTimeout(
+            getDocs(query(usersCol, where('email', '==', cleanEmail))),
+            TIMEOUT_MS,
+            null
+          );
+          if (qSnap && !qSnap.empty) {
+            const docFound = qSnap.docs[0];
+            const preservedProfile = parseUserDataToProfile(docFound.data(), uid, cleanEmail, phoneHint);
+            await setDoc(userRef, preservedProfile, { merge: true }).catch(() => {});
+            if (preservedProfile.role === 'admin') {
+              saveToLocalAdminRegistry(preservedProfile);
+            }
+            return preservedProfile;
+          }
+        } catch (err) {
+          console.warn('Fallback lookup by email notice:', err);
+        }
       }
+    } catch (e) {
+      console.warn('Firestore getUserProfile notice:', e);
     }
-  } catch (e) {
-    console.warn('Firestore getUserProfile notice:', e);
   }
+
+  // 2. Check Local Admin Registry (durable fallback)
+  const localAdmins = getLocalAdminRegistry();
+  const matchedAdmin = localAdmins.find(
+    (a) => (uid && a.uid === uid) || (cleanEmail && a.email && a.email.toLowerCase() === cleanEmail)
+  );
+
+  if (matchedAdmin) {
+    // If found in local registry, ensure doc exists in Firestore in background
+    if (db && uid) {
+      try {
+        const userRef = doc(db, 'users', uid);
+        setDoc(userRef, cleanPayloadForFirestore(matchedAdmin), { merge: true }).catch(() => {});
+      } catch (_) {}
+    }
+    return matchedAdmin;
+  }
+
   return null;
 }
 
@@ -304,7 +425,7 @@ export async function saveUserProfile(profile: UserProfile): Promise<void> {
  * - Only Primary Owner (raheema62038@gmail.com) can call this function
  */
 export async function createAdminUserByOwner(
-  ownerUser: { uid: string; email?: string | null },
+  ownerUser: { uid: string; email?: string | null; role?: string; isPrimaryOwner?: boolean; isOwner?: boolean },
   adminData: {
     email: string;
     password: string;
@@ -317,7 +438,7 @@ export async function createAdminUserByOwner(
     assignedVillage?: string;
   }
 ): Promise<UserProfile> {
-  const cleanEmail = adminData.email.trim().toLowerCase();
+  const rawEmail = adminData.email.trim().toLowerCase();
   const cleanPassword = adminData.password.trim();
   const cleanName = adminData.displayName.trim();
   const cleanPhone = adminData.phone?.trim() || '';
@@ -326,6 +447,11 @@ export async function createAdminUserByOwner(
   const cleanTaluka = adminData.assignedTaluka?.trim() || 'Mehkar';
   const cleanVillage = adminData.assignedVillage?.trim() || '';
   const cleanCircle = adminData.assignedCircle?.trim() || (cleanVillage ? `${cleanVillage}, ${cleanTaluka}` : 'Vi Circle HQ');
+
+  // Ensure clean email with valid domain
+  const cleanEmail = rawEmail.includes('@')
+    ? rawEmail
+    : `${rawEmail.replace(/[^a-z0-9._-]/g, '')}@visales.in`;
 
   if (!cleanEmail || !cleanPassword || !cleanName) {
     throw new Error('कृपया ईमेल, पासवर्ड और नाम सभी आवश्यक फ़ील्ड भरें।');
@@ -336,20 +462,25 @@ export async function createAdminUserByOwner(
 
   // Security check: Only Primary Owner can add admins
   const isOwner = Boolean(
-    ownerUser.email && isEmailPrimaryOwner(ownerUser.email)
+    (ownerUser.email && isEmailPrimaryOwner(ownerUser.email)) ||
+    (auth?.currentUser?.email && isEmailPrimaryOwner(auth.currentUser.email)) ||
+    (ownerUser as any)?.role === 'owner' ||
+    (ownerUser as any)?.isPrimaryOwner ||
+    (ownerUser as any)?.isOwner
   );
   if (!isOwner) {
     throw new Error('सुरक्षा प्रतिबंध: केवल Primary Owner Admin ही नया Admin बना सकते हैं।');
   }
 
-  // Authoritative verified Firebase configuration for project vi-seles-mnp-e7594
+  // Authoritative verified Firebase configuration
+  const activeCfg = getActiveFirebaseConfig();
   const authoritativeConfig = {
-    apiKey: DEFAULT_FIREBASE_CONFIG.apiKey,
-    authDomain: DEFAULT_FIREBASE_CONFIG.authDomain,
-    projectId: DEFAULT_FIREBASE_CONFIG.projectId,
-    storageBucket: DEFAULT_FIREBASE_CONFIG.storageBucket,
-    messagingSenderId: DEFAULT_FIREBASE_CONFIG.messagingSenderId,
-    appId: DEFAULT_FIREBASE_CONFIG.appId,
+    apiKey: activeCfg.apiKey || DEFAULT_FIREBASE_CONFIG.apiKey,
+    authDomain: activeCfg.authDomain || DEFAULT_FIREBASE_CONFIG.authDomain,
+    projectId: activeCfg.projectId || DEFAULT_FIREBASE_CONFIG.projectId,
+    storageBucket: activeCfg.storageBucket || DEFAULT_FIREBASE_CONFIG.storageBucket,
+    messagingSenderId: activeCfg.messagingSenderId || DEFAULT_FIREBASE_CONFIG.messagingSenderId,
+    appId: activeCfg.appId || DEFAULT_FIREBASE_CONFIG.appId,
   };
 
   let newUid = '';
@@ -370,17 +501,14 @@ export async function createAdminUserByOwner(
     const code = (sdkErr?.code || '').toLowerCase();
     const rawMsg = (sdkErr?.message || '').toLowerCase();
 
-    if (code.includes('email-already-in-use') || rawMsg.includes('email_exists')) {
-      throw new Error(`यह ईमेल (${cleanEmail}) पहले से पंजीकृत है। कृपया दूसरा ईमेल दर्ज करें।`);
-    }
     if (code.includes('weak-password') || rawMsg.includes('weak_password')) {
       throw new Error('पासवर्ड बहुत कमजोर है। कम से कम 6 अक्षरों का पासवर्ड दर्ज करें।');
     }
     if (code.includes('invalid-email') || rawMsg.includes('invalid_email')) {
-      throw new Error('कृपया वैध ईमेल पता दर्ज करें।');
+      throw new Error('कृपया मान्य ईमेल पता दर्ज करें (उदा. admin@visales.in)।');
     }
 
-    console.warn('Firebase SDK sign-up notice, using Identity Toolkit REST fallback for vi-seles-mnp-e7594:', sdkErr?.message);
+    console.warn('Firebase SDK sign-up notice, using Identity Toolkit REST fallback:', sdkErr?.message);
 
     try {
       // Robust Google Identity Toolkit REST API Fallback
@@ -398,24 +526,57 @@ export async function createAdminUserByOwner(
       const data = await res.json();
       if (!res.ok || data.error) {
         const errorMsg = data.error?.message || '';
-        if (errorMsg.includes('EMAIL_EXISTS')) {
-          throw new Error(`यह ईमेल (${cleanEmail}) पहले से पंजीकृत है। कृपया दूसरा ईमेल दर्ज करें।`);
-        }
-        if (errorMsg.includes('WEAK_PASSWORD')) {
+        if (errorMsg.includes('EMAIL_EXISTS') || code.includes('email-already-in-use') || rawMsg.includes('email_exists')) {
+          // If email already exists, check Firestore first
+          if (db) {
+            try {
+              const qSnap = await getDocs(query(collection(db, 'users'), where('email', '==', cleanEmail)));
+              if (!qSnap.empty) {
+                newUid = qSnap.docs[0].id;
+              }
+            } catch (_) {}
+          }
+          if (!newUid) {
+            const localAdmins = getLocalAdminRegistry();
+            const foundLocal = localAdmins.find((a) => a.email && a.email.toLowerCase() === cleanEmail);
+            if (foundLocal && foundLocal.uid) {
+              newUid = foundLocal.uid;
+            }
+          }
+          if (!newUid) {
+            try {
+              const signInRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${authoritativeConfig.apiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: cleanEmail, password: cleanPassword, returnSecureToken: true }),
+              });
+              const signData = await signInRes.json();
+              if (signData && signData.localId) {
+                newUid = signData.localId;
+              } else {
+                throw new Error(`यह ईमेल (${cleanEmail}) पहले से पंजीकृत है। कृपया दूसरा ईमेल दर्ज करें या नीचे Admin लिस्ट में इसे एडिट करें।`);
+              }
+            } catch (innerE: any) {
+              throw new Error(innerE?.message || `यह ईमेल (${cleanEmail}) पहले से पंजीकृत है। कृपया दूसरा ईमेल दर्ज करें।`);
+            }
+          }
+        } else if (errorMsg.includes('WEAK_PASSWORD')) {
           throw new Error('पासवर्ड बहुत कमजोर है। कम से कम 6 अक्षरों का पासवर्ड दर्ज करें।');
-        }
-        if (errorMsg.includes('INVALID_EMAIL')) {
+        } else if (errorMsg.includes('INVALID_EMAIL')) {
           throw new Error('कृपया वैध ईमेल पता दर्ज करें।');
-        }
-        if (errorMsg.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
+        } else if (errorMsg.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
           throw new Error('अत्यधिक प्रयासों के कारण सुरक्षा अस्थायी रूप से अवरुद्ध है। कृपया 1-2 मिनट बाद पुनः प्रयास करें।');
+        } else {
+          throw new Error(formatAuthError(data.error || { message: errorMsg }));
         }
-        throw new Error(formatAuthError(data.error || { message: errorMsg }));
+      } else {
+        newUid = data.localId;
       }
-
-      newUid = data.localId;
     } catch (restErr: any) {
-      throw new Error(restErr?.message || 'Admin प्रमाणीकरण खाता बनाने में त्रुटि हुई।');
+      if (restErr?.message && !restErr.message.includes('object Object')) {
+        throw restErr;
+      }
+      throw new Error('Admin प्रमाणीकरण खाता बनाने में त्रुटि हुई।');
     }
   } finally {
     if (secondaryApp) {
@@ -471,16 +632,183 @@ export async function createAdminUserByOwner(
     lastLoginAt: now,
   };
 
+  // 1. Save to local durable backup registry immediately
+  saveToLocalAdminRegistry(newAdminProfile);
+
+  // 2. Save to Firestore users collection with retry and verification
   if (db) {
+    const userRef = doc(db, 'users', newUid);
+    const cleaned = cleanPayloadForFirestore(newAdminProfile);
+    let firestoreSaved = false;
+
     try {
-      const userRef = doc(db, 'users', newUid);
-      await withTimeout(setDoc(userRef, cleanPayloadForFirestore(newAdminProfile), { merge: true }), TIMEOUT_MS, undefined);
+      await withTimeout(setDoc(userRef, cleaned, { merge: true }), 15000, 'Firestore save timeout');
+      firestoreSaved = true;
     } catch (dbErr: any) {
-      console.warn('Firestore setDoc user profile warning:', dbErr);
+      console.warn('First setDoc attempt notice:', dbErr?.message);
+    }
+
+    if (!firestoreSaved) {
+      try {
+        await setDoc(userRef, cleaned, { merge: true });
+        firestoreSaved = true;
+      } catch (retryErr: any) {
+        console.error('Firestore setDoc user profile error:', retryErr);
+        // Direct REST API attempt with token if available
+        const token = auth?.currentUser ? await auth.currentUser.getIdToken().catch(() => null) : null;
+        if (token) {
+          try {
+            await fetch(`https://firestore.googleapis.com/v1/projects/${authoritativeConfig.projectId}/databases/(default)/documents/users/${newUid}`, {
+              method: 'PATCH',
+              headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                fields: convertObjectToFirestoreFields(cleaned)
+              })
+            });
+            firestoreSaved = true;
+          } catch (rErr) {
+            console.warn('Firestore REST fallback error:', rErr);
+          }
+        }
+      }
+    }
+
+    if (!firestoreSaved) {
+      throw new Error(`Firestore डेटाबेस में Admin सेव नहीं हो सका। कृपया नेटवर्क और सुरक्षा नियम जांचें। (Admin ID: ${newUid})`);
     }
   }
 
   return newAdminProfile;
+}
+
+/**
+ * Primary Owner Admin: Update an Admin's profile, phone, territory, status, or password
+ */
+export async function updateAdminUserByOwner(
+  ownerUser: { uid: string; email?: string | null; role?: string; isPrimaryOwner?: boolean; isOwner?: boolean },
+  targetUid: string,
+  details: {
+    displayName: string;
+    phone: string;
+    assignedCircle?: string;
+    assignedState?: string;
+    assignedDistrict?: string;
+    assignedTaluka?: string;
+    assignedVillage?: string;
+    status?: 'approved' | 'deactivated';
+    newPassword?: string;
+  }
+): Promise<UserProfile> {
+  const isOwner = Boolean(
+    (ownerUser.email && isEmailPrimaryOwner(ownerUser.email)) ||
+    (auth?.currentUser?.email && isEmailPrimaryOwner(auth.currentUser.email)) ||
+    (ownerUser as any)?.role === 'owner' ||
+    (ownerUser as any)?.isPrimaryOwner ||
+    (ownerUser as any)?.isOwner
+  );
+  if (!isOwner) {
+    throw new Error('सुरक्षा प्रतिबंध: केवल Primary Owner Admin ही Admin डेटा बदल सकते हैं।');
+  }
+  if (!db) throw new Error('Firestore initialized नहीं है');
+
+  const userRef = doc(db, 'users', targetUid);
+  const snap = await getDoc(userRef).catch(() => null);
+  const currentData = snap && snap.exists() ? snap.data() : {};
+
+  const cleanVillage = details.assignedVillage?.trim() || '';
+  const cleanTaluka = details.assignedTaluka?.trim() || 'Mehkar';
+  const cleanDistrict = details.assignedDistrict?.trim() || 'Buldhana';
+  const cleanState = details.assignedState?.trim() || 'Maharashtra';
+  const cleanCircle = details.assignedCircle?.trim() || (cleanVillage ? `${cleanVillage}, ${cleanTaluka}` : 'Vi Circle HQ');
+  const now = new Date().toISOString();
+  const isDeactivated = details.status === 'deactivated';
+
+  // Build updated territory assignment
+  const updatedTerritory: AdminTerritoryAssignment[] = cleanVillage
+    ? [
+        {
+          id: `terr_${Date.now()}`,
+          state: cleanState,
+          district: cleanDistrict,
+          taluka: cleanTaluka,
+          village: cleanVillage,
+          assignedAt: now,
+          assignedBy: ownerUser.email || ownerUser.uid,
+        },
+      ]
+    : currentData.assignedTerritories || [];
+
+  const updatePayload: Record<string, any> = {
+    displayName: details.displayName.trim(),
+    phone: details.phone.trim(),
+    phoneNumber: details.phone.trim(),
+    assignedCircle: cleanCircle,
+    assignedState: cleanState,
+    assignedDistrict: cleanDistrict,
+    assignedTaluka: cleanTaluka,
+    assignedVillage: cleanVillage,
+    assignedVillages: cleanVillage ? [cleanVillage] : [],
+    assignedTerritories: updatedTerritory,
+    status: details.status || currentData.status || 'approved',
+    isDeactivated,
+    adminAccessRevoked: isDeactivated,
+    updatedAt: now,
+    updatedByOwnerUid: ownerUser.uid,
+  };
+
+  // Optional password update via Identity Platform REST
+  if (details.newPassword && details.newPassword.trim().length >= 6) {
+    try {
+      await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:update?key=${DEFAULT_FIREBASE_CONFIG.apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          localId: targetUid,
+          password: details.newPassword.trim(),
+          returnSecureToken: false,
+        }),
+      });
+      updatePayload.passwordLastResetAt = now;
+    } catch (passErr) {
+      console.warn('Password update notice via identity toolkit:', passErr);
+    }
+  }
+
+  await withTimeout(setDoc(userRef, cleanPayloadForFirestore(updatePayload), { merge: true }), TIMEOUT_MS, undefined);
+
+  const updatedProfile = parseUserDataToProfile(
+    { ...currentData, ...updatePayload },
+    targetUid,
+    currentData.email
+  );
+
+  saveToLocalAdminRegistry(updatedProfile);
+  return updatedProfile;
+}
+
+/**
+ * Primary Owner Admin: Permanently Delete an Admin User
+ * - Deletes the admin profile from Firestore
+ * - Removes from local backup registry
+ * - CRITICAL: Never touches customer leads or bookings
+ */
+export async function deleteAdminUserPermanently(
+  targetUid: string,
+  ownerUid: string,
+  targetEmail?: string,
+  ownerEmail?: string
+): Promise<void> {
+  if (isEmailPrimaryOwner(targetEmail)) {
+    throw new Error('सुरक्षा नियम: Primary Owner account को डिलीट नहीं किया जा सकता।');
+  }
+  if (!db) throw new Error('Firestore initialized नहीं है');
+
+  const userRef = doc(db, 'users', targetUid);
+  await withTimeout(deleteDoc(userRef), TIMEOUT_MS, undefined);
+  removeFromLocalAdminRegistry(targetUid);
 }
 
 /**
@@ -509,6 +837,15 @@ export async function deactivateAdminUser(
     deactivatedAt: now,
     deactivatedBy: ownerEmail || ownerUid,
   });
+
+  const localAdmins = getLocalAdminRegistry();
+  const found = localAdmins.find((a) => a.uid === targetUid);
+  if (found) {
+    found.status = 'deactivated';
+    found.isDeactivated = true;
+    found.adminAccessRevoked = true;
+    saveToLocalAdminRegistry(found);
+  }
 }
 
 /**
@@ -530,6 +867,16 @@ export async function reactivateAdminUser(
     approvedAt: now,
     approvedBy: ownerEmail || ownerUid,
   });
+
+  const localAdmins = getLocalAdminRegistry();
+  const found = localAdmins.find((a) => a.uid === targetUid);
+  if (found) {
+    found.role = 'admin';
+    found.status = 'approved';
+    found.isDeactivated = false;
+    found.adminAccessRevoked = false;
+    saveToLocalAdminRegistry(found);
+  }
 }
 
 /**
@@ -563,6 +910,8 @@ export async function removeAdminUser(
     deactivatedAt: now,
     deactivatedBy: ownerEmail || ownerUid,
   });
+
+  removeFromLocalAdminRegistry(targetUid);
 }
 
 /**
@@ -613,25 +962,67 @@ export async function recordUserLogin(uid: string, loginMethod: string = 'app_lo
 }
 
 /**
+ * Automatically sync any admins stored in local registry up to Firestore
+ * if they are missing from Firestore (e.g. after offline creation or device transfer).
+ */
+export async function syncLocalAdminsToFirestore(): Promise<void> {
+  if (!db) return;
+  const localAdmins = getLocalAdminRegistry();
+  if (localAdmins.length === 0) return;
+
+  for (const admin of localAdmins) {
+    if (!admin.uid) continue;
+    try {
+      const userRef = doc(db, 'users', admin.uid);
+      const snap = await getDoc(userRef).catch(() => null);
+      if (!snap || !snap.exists()) {
+        await setDoc(userRef, cleanPayloadForFirestore(admin), { merge: true }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+}
+
+/**
  * Fetch all users for Admin/Owner management directory
+ * Merges Firestore database records with local backup registry
  */
 export async function getAllUsers(): Promise<UserProfile[]> {
+  const mergedMap = new Map<string, UserProfile>();
+
+  // 1. First seed with local backup registry so there is instant data
+  const localAdmins = getLocalAdminRegistry();
+  localAdmins.forEach((adm) => {
+    if (adm.uid) mergedMap.set(adm.uid, adm);
+  });
+
+  // 2. Fetch from Firestore with generous timeout
   if (db) {
     try {
       const usersCol = collection(db, 'users');
-      const snap = await withTimeout(getDocs(usersCol), 6000, null);
+      const snap = await withTimeout(getDocs(usersCol), 15000, 'getAllUsers timeout').catch((err) => {
+        console.warn('getDocs users notice:', err?.message);
+        return null;
+      });
       if (snap && !snap.empty) {
-        const firestoreUsers: UserProfile[] = [];
         snap.forEach((d) => {
-          firestoreUsers.push(parseUserDataToProfile(d.data(), d.id));
+          const prof = parseUserDataToProfile(d.data(), d.id);
+          mergedMap.set(d.id, prof);
+          if (prof.role === 'admin' || prof.role === 'owner') {
+            saveToLocalAdminRegistry(prof);
+          }
         });
-        return firestoreUsers;
       }
     } catch (e) {
       console.warn('Firestore getAllUsers notice:', e);
     }
   }
-  return [];
+
+  // 3. Sync local admins to Firestore in background
+  if (db && localAdmins.length > 0) {
+    syncLocalAdminsToFirestore().catch(() => {});
+  }
+
+  return Array.from(mergedMap.values());
 }
 
 /**
@@ -642,17 +1033,33 @@ export function subscribeToAllUsers(
   onUsers: (users: UserProfile[]) => void,
   onError?: (err: any) => void
 ): () => void {
+  // Immediately emit current cached users
+  const initialAdmins = getLocalAdminRegistry();
+  if (initialAdmins.length > 0) {
+    onUsers(initialAdmins);
+  }
+
   if (!db) return () => {};
   try {
     const usersCol = collection(db, 'users');
     return onSnapshot(
       usersCol,
       (snapshot) => {
-        const list: UserProfile[] = [];
-        snapshot.forEach((d) => {
-          list.push(parseUserDataToProfile(d.data(), d.id));
+        const mergedMap = new Map<string, UserProfile>();
+        // Seed with local admins
+        getLocalAdminRegistry().forEach((adm) => {
+          if (adm.uid) mergedMap.set(adm.uid, adm);
         });
-        onUsers(list);
+
+        snapshot.forEach((d) => {
+          const prof = parseUserDataToProfile(d.data(), d.id);
+          mergedMap.set(d.id, prof);
+          if (prof.role === 'admin' || prof.role === 'owner') {
+            saveToLocalAdminRegistry(prof);
+          }
+        });
+
+        onUsers(Array.from(mergedMap.values()));
       },
       (err) => {
         console.warn('subscribeToAllUsers notice:', err?.message);

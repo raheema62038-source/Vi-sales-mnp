@@ -131,7 +131,8 @@ service cloud.firestore {
     // ==========================================
     match /users/{userId} {
       allow get: if isOwner(userId) || isAdmin();
-      allow list: if isAdmin();
+      // Strict security: Only Primary Owner can list the entire users / customer directory
+      allow list: if isPrimaryOwner();
 
       // Creating user profiles:
       // - Primary Owner can create any user (including Admin)

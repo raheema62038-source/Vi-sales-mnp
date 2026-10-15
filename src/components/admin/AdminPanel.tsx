@@ -40,7 +40,13 @@ import {
   Building2,
   Crown,
   Shield,
-  UserCheck
+  UserCheck,
+  Ban,
+  Mail,
+  MailCheck,
+  Copy,
+  AtSign,
+  Key
 } from 'lucide-react';
 import { 
   Lead, 
@@ -65,7 +71,9 @@ import {
   subscribeToAllUsers,
   deactivateAdminUser,
   reactivateAdminUser,
-  deleteCustomerUser
+  deleteCustomerUser,
+  deleteAdminUserPermanently,
+  updateAdminUserByOwner
 } from '../../services/userService';
 import {
   getAvailableStates,
@@ -75,6 +83,7 @@ import {
 } from '../../services/territoryService';
 import { TerritoryAssignmentModal } from './TerritoryAssignmentModal';
 import { AddAdminModal } from '../AddAdminModal';
+import { EditAdminModal } from './EditAdminModal';
 import { 
   updateLeadBookingStatus, 
   updateLeadVerificationStatus, 
@@ -125,6 +134,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isTerritoryModalOpen, setIsTerritoryModalOpen] = useState(false);
   const [isAddAdminModalOpen, setIsAddAdminModalOpen] = useState(false);
 
+  // Edit & Delete Admin States (Owner Only)
+  const [selectedAdminForEdit, setSelectedAdminForEdit] = useState<UserProfile | null>(null);
+  const [isEditAdminModalOpen, setIsEditAdminModalOpen] = useState(false);
+  const [adminToDelete, setAdminToDelete] = useState<UserProfile | null>(null);
+  const [isDeletingAdmin, setIsDeletingAdmin] = useState(false);
+
   // Customer Login Directory & Owner Delete State
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [customerLoginFilter, setCustomerLoginFilter] = useState<'ALL' | 'LOGGED_IN' | 'NOT_LOGGED_IN'>('ALL');
@@ -160,15 +175,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return () => unsub();
   }, []);
 
-  // Subscribe to all users in real-time for territory admin assignments and customer login directory
+  // Load and subscribe to all users in real-time (Strictly Primary Owner Only)
   useEffect(() => {
+    if (!isPrimaryOwner) return;
+
+    // 1. Initial immediate load from Firestore & local backup cache
+    getAllUsers().then((initialList) => {
+      if (initialList && initialList.length > 0) {
+        setAllAdminsList(initialList);
+      }
+    }).catch((err) => {
+      console.warn('Initial getAllUsers notice:', err);
+    });
+
+    // 2. Real-time subscription for instant live updates across devices
     const unsub = subscribeToAllUsers((liveUsers) => {
-      if (liveUsers) {
+      if (liveUsers && liveUsers.length > 0) {
         setAllAdminsList(liveUsers);
       }
     });
     return () => unsub();
-  }, []);
+  }, [isPrimaryOwner]);
 
   // Strict RBAC: Non-owner Admins can access Dashboard, Bookings, Customers, and Profile/Help
   useEffect(() => {
@@ -225,10 +252,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Customer Users List from real-time database (Firestore users collection)
   const customerUsersList = useMemo(() => {
-    return allAdminsList.filter(
+    const rawCustomers = allAdminsList.filter(
       (u) => u.role === 'customer' || (!u.role && !isEmailPrimaryOwner(u.email))
     );
-  }, [allAdminsList]);
+
+    // Primary Owner has universal nationwide access to all customer accounts
+    if (isPrimaryOwner) {
+      return rawCustomers;
+    }
+
+    // Strict Territory Scoping for Admin: Admin sees ONLY customers belonging to their assigned village
+    const adminVillage = (userProfile?.assignedVillage || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const adminTaluka = (userProfile?.assignedTaluka || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const adminTerritories = Array.isArray(userProfile?.assignedTerritories) ? userProfile.assignedTerritories : [];
+
+    return rawCustomers.filter((cust) => {
+      const cv = (cust.assignedVillage || cust.address || (cust as any).village || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const ct = (cust.assignedTaluka || (cust as any).taluka || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      if (adminVillage && cv && (cv.includes(adminVillage) || adminVillage.includes(cv))) {
+        return true;
+      }
+      if (adminTerritories.some(t => {
+        const tv = (t.village || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        return tv && cv && (cv.includes(tv) || tv.includes(cv));
+      })) {
+        return true;
+      }
+
+      // Check if customer has bookings assigned to this admin's village
+      const cleanPhone = (cust.phone || cust.phoneNumber || '').replace(/\D/g, '').slice(-10);
+      const hasLeadInVillage = leads.some(l => {
+        const leadPhone = (l.mobileNumber || '').replace(/\D/g, '').slice(-10);
+        return l.customerUid === cust.uid || (cleanPhone && leadPhone === cleanPhone);
+      });
+
+      return hasLeadInVillage;
+    });
+  }, [allAdminsList, isPrimaryOwner, userProfile, leads]);
 
   const totalCustomersCount = customerUsersList.length;
   const totalCustomersLoggedInCount = customerUsersList.filter(
@@ -254,6 +315,180 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return name.includes(q) || email.includes(q) || phone.includes(q) || uid.includes(q);
     });
   }, [customerUsersList, customerLoginFilter, customerSearchQuery]);
+
+  // ==========================================
+  // CONNECTED CUSTOMERS (OWNER DASHBOARD SECTION)
+  // Deduplicated real customer accounts with Firebase Auth UID & Registered Email
+  // ==========================================
+  const [customerEmailSearch, setCustomerEmailSearch] = useState('');
+  const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
+  const [isRefreshingCustomers, setIsRefreshingCustomers] = useState(false);
+
+  const handleCopyText = (text: string, id: string) => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+      setCopiedEmail(id);
+      setTimeout(() => setCopiedEmail(null), 2500);
+    }
+  };
+
+  const handleRefreshCustomersData = async () => {
+    setIsRefreshingCustomers(true);
+    try {
+      if (isPrimaryOwner) {
+        const refreshedUsers = await getAllUsers();
+        if (refreshedUsers && refreshedUsers.length > 0) {
+          setAllAdminsList(refreshedUsers);
+        }
+      }
+      onRefreshLeads();
+      triggerSaveNotification(
+        isHindi
+          ? '✓ ग्राहक सूची एवं बुकिंग्स डेटा Firestore से सफलतापूर्वक रिफ्रेश हुआ'
+          : '✓ Customer list and bookings refreshed from Firestore'
+      );
+    } catch (err: any) {
+      console.warn('Customer refresh notice:', err);
+    } finally {
+      setIsRefreshingCustomers(false);
+    }
+  };
+
+  const connectedCustomersList = useMemo(() => {
+    // Map with lowercase trimmed email as unique key to prevent any duplicate Email IDs
+    const emailMap = new Map<string, {
+      uid: string;
+      email: string;
+      displayName: string;
+      phone: string;
+      registeredAt: string;
+      lastLoginAt?: string;
+      hasLoggedIn: boolean;
+      loginCount: number;
+      assignedCircle: string;
+      totalBookings: number;
+    }>();
+
+    // 1. Process real customer accounts from Firestore users collection
+    allAdminsList.forEach((u) => {
+      // Strictly exclude Owner and Admin accounts
+      if (
+        u.role === 'admin' ||
+        u.role === 'owner' ||
+        u.isPrimaryOwner ||
+        isEmailPrimaryOwner(u.email)
+      ) {
+        return;
+      }
+
+      const rawEmail = (u.email || (u as any).customerEmail || (u as any).userEmail || '').trim().toLowerCase();
+      if (!rawEmail || !rawEmail.includes('@')) return;
+
+      const phone = (u.phone || u.phoneNumber || '').replace(/\D/g, '').slice(-10);
+      const bookingsCount = leads.filter(
+        (l) =>
+          (l.customerEmail && l.customerEmail.trim().toLowerCase() === rawEmail) ||
+          (u.uid && l.customerUid === u.uid) ||
+          (phone && (l.mobileNumber || '').replace(/\D/g, '').slice(-10) === phone)
+      ).length;
+
+      const customerUid = u.customerUid || u.uid || `auth_${rawEmail.replace(/[^a-z0-9]/g, '_')}`;
+
+      emailMap.set(rawEmail, {
+        uid: customerUid,
+        email: rawEmail,
+        displayName: u.displayName || (u as any).name || 'Customer',
+        phone: phone || '',
+        registeredAt: u.createdAt || new Date().toISOString(),
+        lastLoginAt: u.lastLoginAt,
+        hasLoggedIn: Boolean(u.hasLoggedIn || u.lastLoginAt || (u.loginCount && u.loginCount > 0)),
+        loginCount: Number(u.loginCount || 0),
+        assignedCircle: u.assignedCircle || 'Maharashtra',
+        totalBookings: bookingsCount,
+      });
+    });
+
+    // 2. Also check Firestore leads collection for real customers with registered email
+    leads.forEach((l) => {
+      const rawEmail = (l.customerEmail || '').trim().toLowerCase();
+      if (!rawEmail || !rawEmail.includes('@')) return;
+      if (isEmailPrimaryOwner(rawEmail)) return;
+
+      const existing = emailMap.get(rawEmail);
+      const phone = (l.mobileNumber || '').replace(/\D/g, '').slice(-10);
+
+      if (!existing) {
+        const bookingsCount = leads.filter(
+          (other) =>
+            (other.customerEmail && other.customerEmail.trim().toLowerCase() === rawEmail) ||
+            (phone && (other.mobileNumber || '').replace(/\D/g, '').slice(-10) === phone)
+        ).length;
+
+        emailMap.set(rawEmail, {
+          uid: l.customerUid || `auth_lead_${l.id}`,
+          email: rawEmail,
+          displayName: l.customerName || 'Customer',
+          phone: phone || '',
+          registeredAt: l.createdAt || new Date().toISOString(),
+          lastLoginAt: l.createdAt,
+          hasLoggedIn: true,
+          loginCount: 1,
+          assignedCircle: (l as any).circle || 'Maharashtra',
+          totalBookings: bookingsCount,
+        });
+      } else {
+        // If existing record lacked phone or name, enrich it
+        if (!existing.phone && phone) existing.phone = phone;
+        if ((!existing.displayName || existing.displayName === 'Customer') && l.customerName) {
+          existing.displayName = l.customerName;
+        }
+        if (l.customerUid && !existing.uid.startsWith('auth_lead_') && existing.uid.startsWith('auth_')) {
+          existing.uid = l.customerUid;
+        } else if (l.customerUid && existing.uid.startsWith('auth_lead_')) {
+          existing.uid = l.customerUid;
+        }
+      }
+    });
+
+    // 3. Deduplication refinement:
+    // If a customer registered via phone auth (internal email) and later used real email, merge them
+    const realEmailsByPhone = new Map<string, string>();
+    for (const [em, cust] of emailMap.entries()) {
+      if (!em.endsWith('@vi-telecom-auth.internal') && cust.phone) {
+        realEmailsByPhone.set(cust.phone, em);
+      }
+    }
+    for (const [em, cust] of Array.from(emailMap.entries())) {
+      if (em.endsWith('@vi-telecom-auth.internal') && cust.phone && realEmailsByPhone.has(cust.phone)) {
+        const realEm = realEmailsByPhone.get(cust.phone)!;
+        const realCust = emailMap.get(realEm);
+        if (realCust) {
+          if (cust.uid && !cust.uid.startsWith('auth_')) realCust.uid = cust.uid;
+          realCust.totalBookings = Math.max(realCust.totalBookings, cust.totalBookings);
+        }
+        emailMap.delete(em);
+      }
+    }
+
+    // Return deduplicated list sorted by newest registration first
+    return Array.from(emailMap.values()).sort((a, b) => {
+      const dateA = new Date(a.registeredAt).getTime() || 0;
+      const dateB = new Date(b.registeredAt).getTime() || 0;
+      return dateB - dateA;
+    });
+  }, [allAdminsList, leads]);
+
+  const filteredConnectedCustomers = useMemo(() => {
+    if (!customerEmailSearch.trim()) return connectedCustomersList;
+    const q = customerEmailSearch.trim().toLowerCase();
+    return connectedCustomersList.filter(
+      (c) =>
+        c.email.toLowerCase().includes(q) ||
+        c.displayName.toLowerCase().includes(q) ||
+        c.phone.includes(q) ||
+        c.uid.toLowerCase().includes(q)
+    );
+  }, [connectedCustomersList, customerEmailSearch]);
 
   const handleDeleteCustomerConfirm = async () => {
     if (!customerToDelete) return;
@@ -589,6 +824,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               ? [
                   { id: 'dashboard', label: isHindi ? 'डैशबोर्ड' : 'Dashboard', icon: LayoutDashboard },
                   { id: 'bookings', label: isHindi ? 'बुकिंग्स (सभी गाँव)' : 'All Bookings', icon: CalendarCheck, count: stats.totalBookings },
+                  { id: 'connected-customers', label: isHindi ? 'कनेक्टेड ग्राहक (Email ID)' : 'Connected Customers', icon: MailCheck, count: connectedCustomersList.length },
                   { id: 'territories', label: isHindi ? 'क्षेत्र / एडमिन आवंटन' : 'Territories & Admins', icon: Building2 },
                   { id: 'customers', label: isHindi ? 'कस्टमर्स' : 'Customers', icon: Users, count: totalCustomersCount },
                   { id: 'offers', label: isHindi ? 'ऑफर' : 'Offers', icon: Flame },
@@ -681,7 +917,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
 
             {/* KPI Cards Grid */}
-            <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
+            <div className={`grid grid-cols-2 ${isPrimaryOwner ? 'lg:grid-cols-7' : 'lg:grid-cols-6'} gap-3 sm:gap-4`}>
               <div 
                 onClick={() => setActiveSection('bookings')}
                 className="bg-white p-4 rounded-3xl border border-slate-200 shadow-xs hover:border-red-300 transition-all cursor-pointer space-y-2"
@@ -775,6 +1011,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                 </div>
               </div>
+
+              {isPrimaryOwner && (
+                <div 
+                  onClick={() => setActiveSection('connected-customers')}
+                  className="bg-white p-4 rounded-3xl border border-indigo-200 shadow-xs hover:border-indigo-400 transition-all cursor-pointer space-y-2 group"
+                  title={isHindi ? "कनेक्टेड ग्राहकों की ईमेल सूची देखें" : "View Connected Customer Email IDs"}
+                >
+                  <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                    <MailCheck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-2xl font-black text-indigo-950 flex items-baseline gap-1.5">
+                      <span>{connectedCustomersList.length}</span>
+                    </div>
+                    <div className="text-xs font-bold text-indigo-800 flex items-center justify-between">
+                      <span>{isHindi ? 'कनेक्टेड ग्राहक (Email)' : 'Connected Emails'}</span>
+                      <ArrowUpRight className="w-3.5 h-3.5 text-indigo-500" />
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Quick Actions Grid */}
@@ -847,6 +1104,326 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </button>
             </div>
+
+            {/* ======================================================== */}
+            {/* CONNECTED CUSTOMERS SECTION (PRIMARY OWNER DASHBOARD)    */}
+            {/* ======================================================== */}
+            {isPrimaryOwner && (
+              <div className="bg-white rounded-3xl border border-indigo-200/90 p-5 sm:p-6 space-y-5 shadow-xs">
+                {/* Header Banner & Controls */}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-indigo-100 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold border border-indigo-200 shrink-0 shadow-2xs">
+                      <MailCheck className="w-6 h-6 text-indigo-600" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h3 className="font-black text-lg text-slate-900 tracking-tight">
+                          {isHindi ? 'कनेक्टेड ग्राहक (Connected Customers)' : 'Connected Customers'}
+                        </h3>
+                        <span className="text-xs font-black px-2.5 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200">
+                          {connectedCustomersList.length} {isHindi ? 'अद्वितीय ग्राहक' : 'Unique Customers'}
+                        </span>
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
+                          <Crown className="w-3.5 h-3.5 text-amber-600" />
+                          <span>{isHindi ? 'केवल Owner दृश्य' : 'Owner Exclusive'}</span>
+                        </span>
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 flex items-center gap-1">
+                          <Lock className="w-3 h-3 text-emerald-600" />
+                          <span>{isHindi ? 'पासवर्ड सुरक्षित' : 'Zero Password'}</span>
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        {isHindi 
+                          ? 'ऐप से जुड़े सभी वास्तविक ग्राहकों की कुल संख्या एवं पंजीकृत Email ID की सूची (Zero-Duplicate, Firebase Auth UID से सत्यापित)' 
+                          : 'Real-time directory of all registered customer email IDs. Strictly deduplicated & authenticated via Firebase UID.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleRefreshCustomersData}
+                      disabled={isRefreshingCustomers}
+                      className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
+                      title={isHindi ? "Firestore से डेटा रिफ्रेश करें" : "Refresh from Firestore"}
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingCustomers ? 'animate-spin text-indigo-600' : ''}`} />
+                      <span>{isHindi ? 'रिफ्रेश' : 'Refresh'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const emails = connectedCustomersList.map((c) => c.email).join(', ');
+                        handleCopyText(emails, 'dash-all-emails');
+                        triggerSaveNotification(isHindi ? '✓ सभी Email IDs क्लिपबोर्ड पर कॉपी हो गईं' : '✓ All Email IDs copied to clipboard');
+                      }}
+                      className="px-3.5 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                    >
+                      {copiedEmail === 'dash-all-emails' ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="text-emerald-700">{isHindi ? 'कॉपी हो गया!' : 'Copied!'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-indigo-600" />
+                          <span>{isHindi ? 'सभी Email IDs कॉपी करें' : 'Copy All Emails'}</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveSection('connected-customers')}
+                      className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 shadow-xs"
+                    >
+                      <span>{isHindi ? 'पूर्ण स्क्रीन दृश्य ➔' : 'Full Screen ➔'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4 Metric Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-gradient-to-br from-indigo-50/70 to-slate-50 p-4 rounded-2xl border border-indigo-100">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-indigo-900 block">
+                      {isHindi ? 'कुल कनेक्टेड ग्राहक' : 'TOTAL CONNECTED CUSTOMERS'}
+                    </span>
+                    <div className="text-2xl sm:text-3xl font-black text-indigo-950 mt-1">
+                      {connectedCustomersList.length}
+                    </div>
+                    <span className="text-[10px] font-bold text-indigo-700 mt-0.5 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                      {isHindi ? '100% अद्वितीय (Zero Duplicates)' : 'Zero Duplicates'}
+                    </span>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-blue-50/70 to-slate-50 p-4 rounded-2xl border border-blue-100">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-blue-900 block">
+                      {isHindi ? 'FIREBASE AUTH UIDS' : 'FIREBASE AUTH UIDS'}
+                    </span>
+                    <div className="text-2xl sm:text-3xl font-black text-blue-900 mt-1">
+                      {connectedCustomersList.filter((c) => Boolean(c.uid)).length}
+                    </div>
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">
+                      {isHindi ? 'प्रामाणिक क्रिप्टोग्राफिक UID' : 'Authenticated User IDs'}
+                    </span>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-emerald-50/70 to-slate-50 p-4 rounded-2xl border border-emerald-100">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-900 block">
+                      {isHindi ? 'बुकिंग दर्ज ग्राहक' : 'BOOKINGS PLACED'}
+                    </span>
+                    <div className="text-2xl sm:text-3xl font-black text-emerald-700 mt-1">
+                      {connectedCustomersList.filter((c) => c.totalBookings > 0).length}
+                    </div>
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">
+                      {isHindi ? 'MNP / नई सिम का अनुरोध किया' : 'Active leads registered'}
+                    </span>
+                  </div>
+
+                  <div className="bg-gradient-to-br from-purple-50/70 to-slate-50 p-4 rounded-2xl border border-purple-100">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-purple-900 block">
+                      {isHindi ? 'मोबाइल नंबर लिंक' : 'PHONE NUMBERS LINKED'}
+                    </span>
+                    <div className="text-2xl sm:text-3xl font-black text-purple-700 mt-1">
+                      {connectedCustomersList.filter((c) => Boolean(c.phone)).length}
+                    </div>
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">
+                      {isHindi ? '10-अंकीय भारतीय संपर्क' : 'Verified contact numbers'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Search Bar with live filter count */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="relative flex-1 min-w-[240px]">
+                    <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                    <input
+                      type="text"
+                      value={customerEmailSearch}
+                      onChange={(e) => setCustomerEmailSearch(e.target.value)}
+                      placeholder={isHindi ? 'Email ID, ग्राहक नाम, मोबाइल या Firebase UID द्वारा खोजें...' : 'Search by Customer Email ID, Name, Phone, or UID...'}
+                      className="w-full pl-10 pr-9 py-2.5 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/60"
+                    />
+                    {customerEmailSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setCustomerEmailSearch('')}
+                        className="absolute right-3 top-2.5 text-xs text-slate-400 hover:text-slate-600 cursor-pointer"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-500 font-bold bg-slate-100 px-3 py-2 rounded-xl">
+                    {filteredConnectedCustomers.length} / {connectedCustomersList.length} {isHindi ? 'ईमेल' : 'Emails'}
+                  </div>
+                </div>
+
+                {/* Customer Email ID List Table */}
+                <div className="rounded-2xl border border-slate-200 overflow-hidden">
+                  {filteredConnectedCustomers.length === 0 ? (
+                    <div className="p-10 text-center space-y-2 bg-slate-50/50">
+                      <MailCheck className="w-8 h-8 text-slate-400 mx-auto" />
+                      <h4 className="text-xs font-black text-slate-700">
+                        {customerEmailSearch
+                          ? (isHindi ? 'कोई मेल खाती ईमेल आईडी नहीं मिली' : 'No matching customer email found')
+                          : (isHindi ? 'अभी कोई ग्राहक कनेक्टेड नहीं है' : 'No connected customers yet')}
+                      </h4>
+                      <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                        {customerEmailSearch
+                          ? (isHindi ? 'कृपया कोई दूसरा सर्च शब्द डालकर देखें।' : 'Try searching with a different keyword.')
+                          : (isHindi ? 'जैसे ही कोई ग्राहक ऐप में रजिस्टर होकर अकाउंट बनाएगा, उसका विवरण यहाँ वास्तविक समय में जुड़ जाएगा।' : 'When customers sign up in the app, their accounts will appear here automatically in real time.')}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto max-h-[420px] scrollbar-thin">
+                      <table className="w-full text-left text-xs">
+                        <thead className="sticky top-0 z-10 bg-slate-100 border-b border-slate-200 text-[11px] font-black text-slate-600 uppercase tracking-wider">
+                          <tr>
+                            <th className="py-2.5 px-3 w-10 text-center">#</th>
+                            <th className="py-2.5 px-3">{isHindi ? 'पंजीकृत Email ID' : 'Registered Email ID'}</th>
+                            <th className="py-2.5 px-3">{isHindi ? 'Firebase UID' : 'Firebase UID'}</th>
+                            <th className="py-2.5 px-3">{isHindi ? 'ग्राहक नाम / मोबाइल' : 'Customer Name / Phone'}</th>
+                            <th className="py-2.5 px-3">{isHindi ? 'पंजीकरण दिनांक' : 'Registration Date'}</th>
+                            <th className="py-2.5 px-3 text-center">{isHindi ? 'बुकिंग्स' : 'Bookings'}</th>
+                            <th className="py-2.5 px-3 text-right">{isHindi ? 'एक्शन' : 'Actions'}</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {filteredConnectedCustomers.map((cust, idx) => (
+                            <tr key={cust.email} className="hover:bg-indigo-50/30 transition-colors">
+                              <td className="py-3 px-3 text-center font-mono text-slate-400 font-semibold text-[11px]">
+                                {idx + 1}
+                              </td>
+
+                              {/* Email ID */}
+                              <td className="py-3 px-3">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-6 h-6 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                                    <Mail className="w-3 h-3" />
+                                  </div>
+                                  <div>
+                                    <span className="font-extrabold text-slate-900 text-xs block hover:text-indigo-600">
+                                      {cust.email}
+                                    </span>
+                                    <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200 inline-block mt-0.5">
+                                      {isHindi ? '✓ प्रामाणिक ग्राहक' : '✓ Verified Customer'}
+                                    </span>
+                                  </div>
+                                </div>
+                              </td>
+
+                              {/* Firebase UID */}
+                              <td className="py-3 px-3">
+                                <div className="flex items-center gap-1 font-mono text-[11px] text-slate-600">
+                                  <Key className="w-3 h-3 text-slate-400 shrink-0" />
+                                  <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md border border-slate-200 select-all">
+                                    {cust.uid.length > 18 ? `${cust.uid.substring(0, 16)}...` : cust.uid}
+                                  </span>
+                                </div>
+                              </td>
+
+                              {/* Name & Phone */}
+                              <td className="py-3 px-3">
+                                <div className="font-bold text-slate-900 text-xs">
+                                  {cust.displayName || 'Customer'}
+                                </div>
+                                {cust.phone ? (
+                                  <div className="text-[11px] text-slate-600 font-mono font-medium flex items-center gap-1 mt-0.5">
+                                    <Phone className="w-3 h-3 text-emerald-600" />
+                                    <span>+91 {cust.phone}</span>
+                                  </div>
+                                ) : (
+                                  <div className="text-[10px] text-slate-400 italic mt-0.5">
+                                    {isHindi ? 'ईमेल द्वारा पंजीकृत' : 'Email registered'}
+                                  </div>
+                                )}
+                              </td>
+
+                              {/* Registration Date */}
+                              <td className="py-3 px-3">
+                                <span className="text-slate-700 font-medium text-[11px] block">
+                                  {new Date(cust.registeredAt).toLocaleDateString('en-IN', {
+                                    day: '2-digit',
+                                    month: 'short',
+                                    year: 'numeric',
+                                  })}
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  {new Date(cust.registeredAt).toLocaleTimeString('en-IN', {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </td>
+
+                              {/* Bookings Count */}
+                              <td className="py-3 px-3 text-center">
+                                {cust.totalBookings > 0 ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSearchQuery(cust.email);
+                                      setActiveSection('bookings');
+                                    }}
+                                    className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 hover:bg-emerald-200 cursor-pointer border border-emerald-200 transition-colors"
+                                    title={isHindi ? 'इस कस्टमर की बुकिंग्स देखें' : 'View bookings for this customer'}
+                                  >
+                                    {cust.totalBookings} {isHindi ? 'बुकिंग' : 'Bookings'}
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] text-slate-400 font-medium">0</span>
+                                )}
+                              </td>
+
+                              {/* Action Buttons */}
+                              <td className="py-3 px-3 text-right">
+                                <div className="flex items-center justify-end gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleCopyText(cust.email, `dash-em-${cust.email}`);
+                                      triggerSaveNotification(isHindi ? `✓ Email ${cust.email} कॉपी हुआ` : `✓ Email copied`);
+                                    }}
+                                    className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                                    title={isHindi ? 'Email ID कॉपी करें' : 'Copy Email ID'}
+                                  >
+                                    {copiedEmail === `dash-em-${cust.email}` ? (
+                                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                    ) : (
+                                      <Copy className="w-3.5 h-3.5" />
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleCopyText(cust.uid, `dash-uid-${cust.uid}`);
+                                      triggerSaveNotification(isHindi ? `✓ Firebase UID कॉपी हुआ` : `✓ UID copied`);
+                                    }}
+                                    className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                                    title={isHindi ? 'Firebase UID कॉपी करें' : 'Copy Firebase UID'}
+                                  >
+                                    {copiedEmail === `dash-uid-${cust.uid}` ? (
+                                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                    ) : (
+                                      <Key className="w-3.5 h-3.5 text-slate-500" />
+                                    )}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Recent Bookings Activity Feed */}
             <div className="bg-white rounded-3xl border border-slate-200 p-5 space-y-4 shadow-xs">
@@ -2339,6 +2916,388 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
 
         {/* ======================================================== */}
+        {/* 3.5 CONNECTED CUSTOMERS SECTION (PRIMARY OWNER ONLY)      */}
+        {/* ======================================================== */}
+        {activeSection === 'connected-customers' && isPrimaryOwner && (
+          <div className="space-y-5 animate-in fade-in duration-200">
+            {/* Header Banner */}
+            <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white p-6 rounded-3xl border border-indigo-900/60 shadow-lg flex flex-wrap items-center justify-between gap-4">
+              <div className="space-y-1.5 max-w-2xl">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 text-indigo-300 flex items-center justify-center font-bold border border-indigo-400/30">
+                    <MailCheck className="w-5 h-5 text-indigo-300" />
+                  </div>
+                  <div>
+                    <h3 className="font-black text-lg text-white flex items-center gap-2">
+                      <span>{isHindi ? 'कनेक्टेड ग्राहक डायरेक्टरी' : 'Connected Customers Directory'}</span>
+                      <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-200 border border-indigo-400/30">
+                        {filteredConnectedCustomers.length} / {connectedCustomersList.length} {isHindi ? 'अद्वितीय ईमेल' : 'Unique Emails'}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-indigo-200/80 mt-0.5">
+                      {isHindi 
+                        ? 'ऐप से जुड़े सभी वास्तविक ग्राहकों की संख्या एवं उनकी पंजीकृत Email ID की सूची (Zero-Duplicate, Firebase UID द्वारा सत्यापित)।' 
+                        : 'Real-time directory of all registered customer email IDs. Strictly deduplicated and authenticated via Firebase UID.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="px-3.5 py-1.5 rounded-xl text-xs font-black bg-amber-400/10 text-amber-300 border border-amber-400/30 flex items-center gap-1.5">
+                  <Crown className="w-4 h-4 text-amber-400" />
+                  <span>{isHindi ? 'केवल अधिकृत Owner दृश्य' : 'Primary Owner Exclusive'}</span>
+                </span>
+                <span className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5" />
+                  <span>{isHindi ? 'पासवर्ड कभी नहीं दिखाया जाता' : 'Zero-Password Privacy'}</span>
+                </span>
+              </div>
+            </div>
+
+            {/* 4 Statistics Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+              {/* Card 1: Total Connected Customers */}
+              <div className="bg-white p-4 rounded-3xl border border-indigo-200 shadow-xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold">
+                    <MailCheck className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] font-bold text-indigo-800 bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-100">
+                    {isHindi ? '100% अद्वितीय' : 'Zero Duplicates'}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-slate-900 leading-none block">
+                    {connectedCustomersList.length}
+                  </span>
+                  <span className="text-[11px] font-bold text-indigo-950 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'कुल कनेक्टेड ग्राहक' : 'TOTAL CONNECTED CUSTOMERS'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? 'पंजीकृत अद्वितीय Email IDs' : 'Registered customer accounts'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Card 2: Firebase Auth UID Verified */}
+              <div className="bg-white p-4 rounded-3xl border border-blue-200 shadow-xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+                    <ShieldCheck className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] font-bold text-blue-800 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-100">
+                    {isHindi ? 'सत्यापित' : 'Auth Verified'}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-blue-600 leading-none block">
+                    {connectedCustomersList.filter((c) => Boolean(c.uid)).length}
+                  </span>
+                  <span className="text-[11px] font-bold text-blue-950 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'FIREBASE UID सत्यापित' : 'FIREBASE AUTH UIDS'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? 'प्रामाणिक प्रमाणीकरण आईडी' : 'Unique cryptographic user IDs'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Card 3: Active Bookings Placed */}
+              <div className="bg-white p-4 rounded-3xl border border-emerald-200 shadow-xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+                    <CalendarCheck className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-100">
+                    {connectedCustomersList.filter((c) => c.totalBookings > 0).length} {isHindi ? 'सक्रिय' : 'Active'}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-emerald-600 leading-none block">
+                    {connectedCustomersList.filter((c) => c.totalBookings > 0).length}
+                  </span>
+                  <span className="text-[11px] font-bold text-emerald-950 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'बुकिंग दर्ज करने वाले' : 'BOOKINGS PLACED'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? 'MNP / नई सिम का अनुरोध किया' : 'Customers with active leads'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Card 4: Mobile Number Linked */}
+              <div className="bg-white p-4 rounded-3xl border border-purple-200 shadow-xs flex flex-col justify-between">
+                <div className="flex items-center justify-between">
+                  <div className="w-10 h-10 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center font-bold">
+                    <Phone className="w-5 h-5" />
+                  </div>
+                  <span className="text-[10px] font-bold text-purple-800 bg-purple-50 px-2.5 py-0.5 rounded-full border border-purple-100">
+                    {connectedCustomersList.filter((c) => Boolean(c.phone)).length} {isHindi ? 'लिंक्ड' : 'Linked'}
+                  </span>
+                </div>
+                <div className="mt-3">
+                  <span className="text-2xl sm:text-3xl font-black text-purple-600 leading-none block">
+                    {connectedCustomersList.filter((c) => Boolean(c.phone)).length}
+                  </span>
+                  <span className="text-[11px] font-bold text-purple-950 uppercase tracking-wider block mt-1.5">
+                    {isHindi ? 'मोबाइल नंबर लिंक' : 'PHONE NUMBERS LINKED'}
+                  </span>
+                  <span className="text-[10px] text-slate-500 block mt-0.5">
+                    {isHindi ? '10-अंकीय भारतीय मोबाइल नंबर' : '10-digit customer contacts'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Search Bar & Copy All Controls */}
+            <div className="bg-white p-4 rounded-3xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
+              <div className="relative flex-1 min-w-[240px]">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="text"
+                  value={customerEmailSearch}
+                  onChange={(e) => setCustomerEmailSearch(e.target.value)}
+                  placeholder={isHindi ? 'कस्टमर की Email ID, नाम, फोन या UID से खोजें...' : 'Search by Customer Email ID, Name, Phone, or UID...'}
+                  className="w-full pl-10 pr-9 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50/50"
+                />
+                {customerEmailSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomerEmailSearch('')}
+                    className="absolute right-3 top-2.5 text-xs text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleRefreshCustomersData}
+                  disabled={isRefreshingCustomers}
+                  className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
+                  title={isHindi ? "Firestore से डेटा रिफ्रेश करें" : "Refresh from Firestore"}
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingCustomers ? 'animate-spin text-indigo-600' : ''}`} />
+                  <span>{isHindi ? 'रिफ्रेश' : 'Refresh'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const emails = connectedCustomersList.map((c) => c.email).join(', ');
+                    handleCopyText(emails, 'all-emails');
+                    triggerSaveNotification(isHindi ? '✓ सभी Email IDs क्लिपबोर्ड पर कॉपी हो गईं' : '✓ All Email IDs copied to clipboard');
+                  }}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                >
+                  {copiedEmail === 'all-emails' ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      <span className="text-emerald-700">{isHindi ? 'कॉपी हो गया!' : 'Copied!'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>{isHindi ? 'सभी Email IDs कॉपी करें' : 'Copy All Emails'}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Customers Email ID Table */}
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/50 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <AtSign className="w-4 h-4 text-indigo-600" />
+                  <span className="font-black text-xs text-slate-800 uppercase tracking-wider">
+                    {isHindi ? 'पंजीकृत ग्राहक Email ID सूची' : 'Registered Customer Email ID List'}
+                  </span>
+                  <span className="text-[11px] font-bold bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full">
+                    {filteredConnectedCustomers.length} {isHindi ? 'रिकॉर्ड' : 'Records'}
+                  </span>
+                </div>
+                <span className="text-[11px] text-slate-500 font-medium">
+                  {isHindi ? 'Firebase Auth UID से मैप किया गया' : 'Mapped to Firebase Authentication UIDs'}
+                </span>
+              </div>
+
+              {filteredConnectedCustomers.length === 0 ? (
+                <div className="p-12 text-center space-y-3">
+                  <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 mx-auto flex items-center justify-center">
+                    <MailCheck className="w-6 h-6" />
+                  </div>
+                  <h4 className="text-sm font-black text-slate-700">
+                    {customerEmailSearch
+                      ? (isHindi ? 'कोई ग्राहक ईमेल नहीं मिला' : 'No matching customer email found')
+                      : (isHindi ? 'अभी कोई ग्राहक कनेक्टेड नहीं है' : 'No connected customers yet')}
+                  </h4>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                    {customerEmailSearch
+                      ? (isHindi ? 'कृपया दूसरा ईमेल पता या सर्च कीवर्ड डालकर देखें।' : 'Try searching with a different email keyword.')
+                      : (isHindi ? 'जैसे ही कोई ग्राहक ऐप में रजिस्टर होकर लॉगिन करेगा, उसकी ईमेल आईडी यहाँ वास्तविक समय में दिखाई देगी।' : 'When customers sign up in the app, their email IDs will appear here automatically in real time.')}
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-100/70 border-b border-slate-200 text-[11px] font-black text-slate-600 uppercase tracking-wider">
+                        <th className="py-3 px-4 w-12 text-center">#</th>
+                        <th className="py-3 px-4">{isHindi ? 'पंजीकृत Email ID' : 'Registered Email ID'}</th>
+                        <th className="py-3 px-4">{isHindi ? 'Firebase UID' : 'Firebase UID'}</th>
+                        <th className="py-3 px-4">{isHindi ? 'ग्राहक नाम / मोबाइल' : 'Customer Name / Phone'}</th>
+                        <th className="py-3 px-4">{isHindi ? 'पंजीकरण दिनांक' : 'Registration Date'}</th>
+                        <th className="py-3 px-4 text-center">{isHindi ? 'बुकिंग्स' : 'Bookings'}</th>
+                        <th className="py-3 px-4 text-right">{isHindi ? 'एक्शन' : 'Actions'}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {filteredConnectedCustomers.map((cust, idx) => (
+                        <tr key={cust.email} className="hover:bg-indigo-50/30 transition-colors">
+                          <td className="py-3.5 px-4 text-center font-mono text-slate-400 font-semibold text-[11px]">
+                            {idx + 1}
+                          </td>
+
+                          {/* Email ID with Copy */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-2">
+                              <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
+                                <Mail className="w-3.5 h-3.5" />
+                              </div>
+                              <div>
+                                <span className="font-extrabold text-slate-900 text-xs block hover:text-indigo-600">
+                                  {cust.email}
+                                </span>
+                                <div className="flex items-center gap-1.5 mt-0.5">
+                                  <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                                    {isHindi ? '✓ प्रामाणिक' : '✓ Verified'}
+                                  </span>
+                                  {cust.assignedCircle && (
+                                    <span className="text-[10px] text-slate-500 font-medium">
+                                      {cust.assignedCircle}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* Firebase UID */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-1.5 font-mono text-[11px] text-slate-600">
+                              <Key className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md border border-slate-200 select-all">
+                                {cust.uid.length > 20 ? `${cust.uid.substring(0, 18)}...` : cust.uid}
+                              </span>
+                            </div>
+                          </td>
+
+                          {/* Name & Phone */}
+                          <td className="py-3.5 px-4">
+                            <div className="font-bold text-slate-900 text-xs">
+                              {cust.displayName || 'Customer'}
+                            </div>
+                            {cust.phone ? (
+                              <div className="text-[11px] text-slate-600 font-mono font-medium flex items-center gap-1 mt-0.5">
+                                <Phone className="w-3 h-3 text-emerald-600" />
+                                <span>+91 {cust.phone}</span>
+                              </div>
+                            ) : (
+                              <div className="text-[10px] text-slate-400 italic mt-0.5">
+                                {isHindi ? 'ईमेल द्वारा पंजीकृत' : 'Email registered'}
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Registration Date */}
+                          <td className="py-3.5 px-4">
+                            <span className="text-slate-700 font-medium text-[11px] block">
+                              {new Date(cust.registeredAt).toLocaleDateString('en-IN', {
+                                day: '2-digit',
+                                month: 'short',
+                                year: 'numeric',
+                              })}
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              {new Date(cust.registeredAt).toLocaleTimeString('en-IN', {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                          </td>
+
+                          {/* Bookings Count */}
+                          <td className="py-3.5 px-4 text-center">
+                            {cust.totalBookings > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSearchQuery(cust.email);
+                                  setActiveSection('bookings');
+                                }}
+                                className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800 hover:bg-emerald-200 cursor-pointer border border-emerald-200 transition-colors"
+                                title={isHindi ? 'इस कस्टमर की बुकिंग्स देखें' : 'View bookings for this customer'}
+                              >
+                                {cust.totalBookings} {isHindi ? 'बुकिंग' : 'Bookings'}
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-medium">
+                                0
+                              </span>
+                            )}
+                          </td>
+
+                          {/* Action Buttons */}
+                          <td className="py-3.5 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleCopyText(cust.email, `email-${cust.email}`);
+                                  triggerSaveNotification(isHindi ? `✓ Email ${cust.email} कॉपी हुआ` : `✓ Email copied`);
+                                }}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                                title={isHindi ? 'Email ID कॉपी करें' : 'Copy Email ID'}
+                              >
+                                {copiedEmail === `email-${cust.email}` ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                ) : (
+                                  <Copy className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleCopyText(cust.uid, `uid-${cust.uid}`);
+                                  triggerSaveNotification(isHindi ? `✓ Firebase UID कॉपी हुआ` : `✓ UID copied`);
+                                }}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 transition-colors cursor-pointer"
+                                title={isHindi ? 'Firebase UID कॉपी करें' : 'Copy Firebase UID'}
+                              >
+                                {copiedEmail === `uid-${cust.uid}` ? (
+                                  <Check className="w-3.5 h-3.5 text-emerald-600" />
+                                ) : (
+                                  <Key className="w-3.5 h-3.5 text-slate-500" />
+                                )}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ======================================================== */}
         {/* TERRITORY & ADMIN ASSIGNMENT SECTION (VILLAGE & CITY)    */}
         {/* ======================================================== */}
         {activeSection === 'territories' && (
@@ -2619,20 +3578,73 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           </div>
                         </div>
 
-                        {/* Assign Territory Action */}
-                        <div className="flex items-center gap-2 shrink-0">
+                        {/* Admin Action Buttons (Owner Only) */}
+                        <div className="flex items-center gap-2 shrink-0 flex-wrap">
                           {isPrimaryOwner && !isOwner && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedAdminForTerritory(admin);
-                                setIsTerritoryModalOpen(true);
-                              }}
-                              className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs shadow-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
-                            >
-                              <MapPin className="w-3.5 h-3.5" />
-                              <span>{isHindi ? '📍 गाँव/क्षेत्र असाइन करें' : '📍 Assign / Edit Village'}</span>
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAdminForEdit(admin);
+                                  setIsEditAdminModalOpen(true);
+                                }}
+                                className="px-3.5 py-2.5 rounded-xl bg-slate-900 hover:bg-black text-white font-black text-xs shadow-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                                title={isHindi ? 'Admin जानकारी एडिट करें' : 'Edit Admin Details'}
+                              >
+                                <Edit3 className="w-3.5 h-3.5 text-amber-400" />
+                                <span>{isHindi ? 'एडिट करें' : 'Edit'}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedAdminForTerritory(admin);
+                                  setIsTerritoryModalOpen(true);
+                                }}
+                                className="px-3.5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-black text-xs shadow-xs flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                                title={isHindi ? 'गाँव/क्षेत्र असाइन करें' : 'Assign / Edit Village'}
+                              >
+                                <MapPin className="w-3.5 h-3.5" />
+                                <span>{isHindi ? '📍 गाँव असाइन' : '📍 Village'}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    if (admin.isDeactivated) {
+                                      await reactivateAdminUser(admin.uid, user?.uid || '', user?.email || undefined);
+                                      triggerSaveNotification(isHindi ? `✓ Admin ${admin.displayName} पुनः सक्रिय किया गया` : `✓ Admin ${admin.displayName} reactivated`);
+                                      setAllAdminsList(prev => prev.map(a => a.uid === admin.uid ? { ...a, isDeactivated: false, status: 'approved' } : a));
+                                    } else {
+                                      await deactivateAdminUser(admin.uid, user?.uid || '', admin.email, user?.email || undefined);
+                                      triggerSaveNotification(isHindi ? `✓ Admin ${admin.displayName} निष्क्रिय किया गया` : `✓ Admin ${admin.displayName} deactivated`);
+                                      setAllAdminsList(prev => prev.map(a => a.uid === admin.uid ? { ...a, isDeactivated: true, status: 'deactivated' } : a));
+                                    }
+                                  } catch (err: any) {
+                                    setActionErrorMsg(err?.message || 'स्थिति बदलने में त्रुटि');
+                                  }
+                                }}
+                                className={`px-3 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 border ${
+                                  admin.isDeactivated
+                                    ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                                    : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                                }`}
+                              >
+                                {admin.isDeactivated ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> : <Ban className="w-3.5 h-3.5 text-amber-700" />}
+                                <span>{admin.isDeactivated ? (isHindi ? 'सक्रिय' : 'Activate') : (isHindi ? 'रोकें' : 'Deactivate')}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setAdminToDelete(admin)}
+                                className="px-3 py-2.5 rounded-xl bg-red-50 hover:bg-red-600 hover:text-white text-red-700 border border-red-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all active:scale-95 shadow-2xs"
+                                title={isHindi ? 'Admin हटाएं (लीड्स सुरक्षित रहेंगी)' : 'Delete Admin'}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>{isHindi ? 'हटाएं' : 'Delete'}</span>
+                              </button>
+                            </>
                           )}
                         </div>
                       </div>
@@ -3911,10 +4923,123 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               ? `✓ नया एडमिन ${newAdmin.displayName} सफलतापूर्वक बनाया गया`
               : `✓ New Admin ${newAdmin.displayName} created successfully`
           );
-          setAllAdminsList((prev) => [...prev, newAdmin]);
+          setAllAdminsList((prev) => [...prev.filter((a) => a.uid !== newAdmin.uid), newAdmin]);
           onRefreshLeads();
         }}
       />
+
+      {/* ======================================================== */}
+      {/* MODAL 7.5: EDIT ADMIN MODAL (OWNER ONLY)                 */}
+      {/* ======================================================== */}
+      <EditAdminModal
+        isOpen={isEditAdminModalOpen}
+        onClose={() => {
+          setIsEditAdminModalOpen(false);
+          setSelectedAdminForEdit(null);
+        }}
+        targetAdmin={selectedAdminForEdit}
+        onAdminUpdated={(updatedAdmin) => {
+          triggerSaveNotification(
+            isHindi
+              ? `✓ एडमिन ${updatedAdmin.displayName} की जानकारी सफलतापूर्वक अपडेट की गई`
+              : `✓ Admin ${updatedAdmin.displayName} updated successfully`
+          );
+          setAllAdminsList((prev) =>
+            prev.map((a) => (a.uid === updatedAdmin.uid ? updatedAdmin : a))
+          );
+          onRefreshLeads();
+        }}
+      />
+
+      {/* ======================================================== */}
+      {/* MODAL 7.6: DELETE ADMIN MODAL (OWNER ONLY)               */}
+      {/* ======================================================== */}
+      {adminToDelete && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-red-200 space-y-5 animate-in fade-in zoom-in-95">
+            <div className="flex items-start gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center shrink-0 shadow-xs">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-black text-slate-900">
+                  {isHindi ? 'Admin खाता डिलीट करें?' : 'Delete Admin Account?'}
+                </h3>
+                <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                  {isHindi
+                    ? `क्या आप वाकई Admin "${adminToDelete.displayName || adminToDelete.email}" को हटाना चाहते हैं? इस Admin द्वारा प्रबंधित सभी लीड्स और डेटा पूरी तरह सुरक्षित रहेंगे।`
+                    : `Are you sure you want to delete Admin "${adminToDelete.displayName || adminToDelete.email}"? All leads managed by this admin will remain safe.`}
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-xs space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'Admin नाम:' : 'Admin Name:'}</span>
+                <span className="font-extrabold text-slate-900">{adminToDelete.displayName || 'Admin'}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'लॉगिन ईमेल:' : 'Login Email:'}</span>
+                <span className="font-mono text-slate-700">{adminToDelete.email}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500 font-semibold">{isHindi ? 'आवंटित गाँव:' : 'Assigned Village:'}</span>
+                <span className="font-bold text-purple-800">{adminToDelete.assignedVillage || 'None'}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-1">
+              <button
+                type="button"
+                disabled={isDeletingAdmin}
+                onClick={() => setAdminToDelete(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition-all"
+              >
+                {isHindi ? 'रद्द करें' : 'Cancel'}
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingAdmin}
+                onClick={async () => {
+                  setIsDeletingAdmin(true);
+                  try {
+                    await deleteAdminUserPermanently(
+                      adminToDelete.uid,
+                      user?.uid || '',
+                      adminToDelete.email,
+                      user?.email || undefined
+                    );
+                    triggerSaveNotification(
+                      isHindi
+                        ? `✓ Admin ${adminToDelete.displayName || adminToDelete.email} हटा दिया गया`
+                        : `✓ Admin deleted successfully`
+                    );
+                    setAllAdminsList((prev) => prev.filter((a) => a.uid !== adminToDelete.uid));
+                    setAdminToDelete(null);
+                  } catch (err: any) {
+                    setActionErrorMsg(err?.message || 'Admin डिलीट करने में त्रुटि');
+                  } finally {
+                    setIsDeletingAdmin(false);
+                  }
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-red-600 hover:bg-red-700 text-white flex items-center gap-1.5 cursor-pointer shadow-md transition-all disabled:opacity-50"
+              >
+                {isDeletingAdmin ? (
+                  <>
+                    <span className="animate-spin">⟳</span>
+                    <span>{isHindi ? 'हटाया जा रहा है...' : 'Deleting...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    <span>{isHindi ? 'हाँ, Admin हटाएं' : 'Yes, Delete Admin'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ======================================================== */}
       {/* MODAL 8: DELETE CUSTOMER ID CONFIRMATION (OWNER ONLY)    */}

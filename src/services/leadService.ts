@@ -37,25 +37,27 @@ export function isUserAdminOrOwner(user?: {
   return false;
 }
 
-/**
- * Strips out any `undefined` or null properties so Firestore never throws
- * "Unsupported field value: undefined" errors.
- */
-function cleanPayloadForFirestore(payload: Record<string, any>): Record<string, any> {
-  const clean: Record<string, any> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (value !== undefined && value !== null) {
-      if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (trimmed.length > 0) {
-          clean[key] = trimmed;
-        }
-      } else {
-        clean[key] = value;
+function cleanPayloadForFirestore(obj: any): any {
+  if (obj === undefined) return null;
+  if (obj === null) return null;
+  if (Array.isArray(obj)) {
+    return obj
+      .map(cleanPayloadForFirestore)
+      .filter((item) => item !== undefined);
+  }
+  if (typeof obj === 'object') {
+    const clean: Record<string, any> = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        clean[key] = cleanPayloadForFirestore(value);
       }
     }
+    return clean;
   }
-  return clean;
+  if (typeof obj === 'string') {
+    return obj.trim();
+  }
+  return obj;
 }
 
 /**

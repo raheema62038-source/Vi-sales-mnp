@@ -126,7 +126,7 @@ export async function executeFirebaseSignIn(
       const errCode = (sdkErr?.code || '').toLowerCase();
       const errMsg = (sdkErr?.message || '').toLowerCase();
 
-      // If it's standard bad credentials, throw formatted user error immediately
+      // If it's standard bad credentials, check for first-time Primary Owner or throw formatted error
       if (
         errCode.includes('invalid-credential') ||
         errCode.includes('invalid-login-credentials') ||
@@ -135,6 +135,23 @@ export async function executeFirebaseSignIn(
         errCode.includes('user-disabled') ||
         errCode.includes('too-many-requests')
       ) {
+        // First-time Primary Owner auto-provision if not yet registered in Firebase project
+        if (
+          cleanEmail === 'raheema62038@gmail.com' &&
+          (errCode.includes('user-not-found') || errCode.includes('invalid-credential') || errCode.includes('invalid-login-credentials'))
+        ) {
+          try {
+            const newCred = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
+            return {
+              uid: newCred.user.uid,
+              email: newCred.user.email || cleanEmail,
+              displayName: newCred.user.displayName || 'Primary Owner Admin (Master)',
+              user: newCred.user,
+            };
+          } catch (createErr: any) {
+            console.warn('Owner auto-registration attempt notice:', createErr?.code);
+          }
+        }
         throw new Error(formatAuthError(sdkErr));
       }
 

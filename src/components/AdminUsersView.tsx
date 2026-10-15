@@ -25,7 +25,8 @@ import {
   History,
   Download,
   Sparkles,
-  Flame
+  Flame,
+  Edit3
 } from 'lucide-react';
 import { UserProfile, UserRole, Lead } from '../types';
 import { db } from '../firebase';
@@ -47,6 +48,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { AddAdminModal } from './AddAdminModal';
 import { TerritoryAssignmentModal } from './admin/TerritoryAssignmentModal';
+import { EditAdminModal } from './admin/EditAdminModal';
 
 interface AdminUsersViewProps {
   allLeads: Lead[];
@@ -81,6 +83,8 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
   const [isSubmittingAction, setIsSubmittingAction] = useState(false);
   const [selectedAdminForTerritory, setSelectedAdminForTerritory] = useState<UserProfile | null>(null);
   const [isTerritoryModalOpen, setIsTerritoryModalOpen] = useState(false);
+  const [selectedAdminForEdit, setSelectedAdminForEdit] = useState<UserProfile | null>(null);
+  const [isEditAdminModalOpen, setIsEditAdminModalOpen] = useState(false);
   const [customerToDelete, setCustomerToDelete] = useState<UserProfile | null>(null);
   const [isDeletingCustomer, setIsDeletingCustomer] = useState(false);
 
@@ -542,7 +546,8 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
         </div>
       </section>
 
-      {/* ADMIN CUSTOMER LIST (Placed Directly Below Statistics) */}
+      {/* ADMIN CUSTOMER LIST (Placed Directly Below Statistics - Owner Exclusive) */}
+      {isOwnerAdmin ? (
       <section className="bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden space-y-0">
         <div className="p-4 bg-gradient-to-r from-gray-50 to-slate-50 border-b border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div>
@@ -717,6 +722,16 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
           </div>
         )}
       </section>
+      ) : (
+        <div className="p-4 bg-amber-50/80 border border-amber-200/80 rounded-2xl text-xs text-amber-900 flex items-center gap-2.5 shadow-2xs">
+          <Lock className="w-4 h-4 text-amber-600 shrink-0" />
+          <span className="font-medium">
+            {language === 'hi'
+              ? 'सुरक्षा नियम: पूरी ग्राहक ईमेल सूची केवल अधिकृत Owner के लिए सुरक्षित और उपलब्ध है।'
+              : 'Security rule: The full customer email list is strictly restricted to the authorized Owner.'}
+          </span>
+        </div>
+      )}
 
       {/* ADMIN & OWNER TEAM MANAGEMENT SECTION */}
       <section className="space-y-3 pt-2">
@@ -953,18 +968,33 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
                   {isOwnerAdmin && !isOwner && !isSelf && (
                     <div className="flex items-center gap-1.5 flex-wrap justify-end">
                       {isNormalAdmin && !isDeactivated && user.status !== 'deleted' && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedAdminForTerritory(user);
-                            setIsTerritoryModalOpen(true);
-                          }}
-                          className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-purple-50 text-purple-900 hover:bg-purple-100 border border-purple-200 transition-colors flex items-center gap-1 cursor-pointer"
-                          title="Assign Village / City Territory"
-                        >
-                          <MapPin className="w-3 h-3 text-purple-600" />
-                          <span>{language === 'hi' ? 'गाँव आवंटन' : 'Territory'}</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedAdminForEdit(user);
+                              setIsEditAdminModalOpen(true);
+                            }}
+                            className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-slate-900 text-white hover:bg-black transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                            title={language === 'hi' ? 'Admin विवरण एडिट करें' : 'Edit Admin Details'}
+                          >
+                            <Edit3 className="w-3 h-3 text-amber-400" />
+                            <span>{language === 'hi' ? 'एडिट' : 'Edit'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedAdminForTerritory(user);
+                              setIsTerritoryModalOpen(true);
+                            }}
+                            className="text-[11px] font-bold px-2.5 py-1 rounded-xl bg-purple-50 text-purple-900 hover:bg-purple-100 border border-purple-200 transition-colors flex items-center gap-1 cursor-pointer"
+                            title="Assign Village / City Territory"
+                          >
+                            <MapPin className="w-3 h-3 text-purple-600" />
+                            <span>{language === 'hi' ? 'गाँव आवंटन' : 'Territory'}</span>
+                          </button>
+                        </>
                       )}
 
                       {isNormalAdmin && !isDeactivated && user.status !== 'deleted' && (
@@ -1044,6 +1074,25 @@ export const AdminUsersView: React.FC<AdminUsersViewProps> = ({
               : `New Admin "${newAdmin.displayName}" (${newAdmin.email}) successfully created!`
           );
           setTimeout(() => setSuccessMsg(null), 4500);
+          loadData();
+        }}
+      />
+
+      {/* Edit Admin Modal (Owner Only) */}
+      <EditAdminModal
+        isOpen={isEditAdminModalOpen}
+        onClose={() => {
+          setIsEditAdminModalOpen(false);
+          setSelectedAdminForEdit(null);
+        }}
+        targetAdmin={selectedAdminForEdit}
+        onAdminUpdated={(updatedAdmin) => {
+          setSuccessMsg(
+            language === 'hi'
+              ? `Admin "${updatedAdmin.displayName}" की जानकारी सफलतापूर्वक अपडेट की गई!`
+              : `Admin "${updatedAdmin.displayName}" details updated successfully!`
+          );
+          setTimeout(() => setSuccessMsg(null), 4000);
           loadData();
         }}
       />

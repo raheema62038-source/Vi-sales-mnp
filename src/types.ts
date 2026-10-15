@@ -285,6 +285,7 @@ export type AdminSection =
   | 'dashboard'
   | 'bookings'
   | 'customers'
+  | 'connected-customers'
   | 'territories'
   | 'offers'
   | 'banners'

@@ -607,6 +607,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             createdAt: existingProfile?.createdAt || new Date().toISOString(),
             lastLoginAt: new Date().toISOString(),
             assignedCircle: isPrimaryOwner ? 'National HQ (Owner)' : (existingProfile?.assignedCircle || 'National HQ'),
+            hasLoggedIn: true,
+            loginCount: (existingProfile?.loginCount || 0) + 1,
           };
           try {
             await saveUserProfile(adminProf);
@@ -614,6 +616,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             console.warn('Admin profile save notice:', e);
           }
           existingProfile = adminProf;
+        } else {
+          const updatedAdmin: UserProfile = {
+            ...existingProfile,
+            lastLoginAt: new Date().toISOString(),
+            hasLoggedIn: true,
+            loginCount: (existingProfile.loginCount || 0) + 1,
+          };
+          saveUserProfile(updatedAdmin).catch((e) => console.warn('Admin last login update notice:', e));
+          existingProfile = updatedAdmin;
         }
 
         setUser(userObj);

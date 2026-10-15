@@ -75,6 +75,8 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
   const [assignedVillage, setAssignedVillage] = useState('Mehkar City');
   const [customVillage, setCustomVillage] = useState('');
 
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
   const availableStates = getAvailableStates();
   const availableDistricts = getAvailableDistricts(assignedState);
   const availableTalukas = getAvailableTalukas(assignedState, assignedDistrict);
@@ -115,6 +117,7 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setSuccessMsg(null);
 
     if (!isOwnerAdmin) {
       setError('सुरक्षा नियम: केवल Primary Owner Admin ही नया Admin बना सकते हैं।');
@@ -136,7 +139,7 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
     }
     const cleanEmail = rawId.includes('@')
       ? rawId
-      : `${rawId.replace(/[^a-z0-9._-]/g, '')}@visales.local`;
+      : `${rawId.replace(/[^a-z0-9._-]/g, '')}@visales.in`;
 
     if (cleanPassword.length < 6) {
       setError('पासवर्ड कम से कम 6 अक्षरों का होना चाहिए।');
@@ -150,7 +153,13 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
     setLoading(true);
     try {
       const newAdmin = await createAdminUserByOwner(
-        { uid: user?.uid || '', email: user?.email || '' },
+        {
+          uid: user?.uid || '',
+          email: user?.email || '',
+          role: (user as any)?.role || 'owner',
+          isPrimaryOwner: true,
+          isOwner: true,
+        },
         {
           displayName: cleanName,
           email: cleanEmail,
@@ -164,16 +173,26 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
         }
       );
 
-      // Reset form
-      setName('');
-      setEmail('');
-      setPassword('');
-      setPhone('');
-      setCircle('National HQ');
-      setAssignedVillage('Mehkar City');
-      setCustomVillage('');
+      setSuccessMsg(
+        language === 'hi'
+          ? `✓ Admin Account Created Successfully! ID: ${cleanEmail}, गाँव: ${finalVillage}`
+          : `✓ Admin Account Created Successfully! ID: ${cleanEmail}, Village: ${finalVillage}`
+      );
+
       onAdminCreated(newAdmin);
-      onClose();
+
+      setTimeout(() => {
+        // Reset form
+        setName('');
+        setEmail('');
+        setPassword('');
+        setPhone('');
+        setCircle('National HQ');
+        setAssignedVillage('Mehkar City');
+        setCustomVillage('');
+        setSuccessMsg(null);
+        onClose();
+      }, 1400);
     } catch (err: any) {
       setError(err?.message || 'Admin बनाने में त्रुटि हुई।');
     } finally {
@@ -225,6 +244,14 @@ export const AddAdminModal: React.FC<AddAdminModalProps> = ({
           <div className="mx-5 mt-4 p-3 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2 text-xs text-red-700 font-medium">
             <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {/* Success Alert */}
+        {successMsg && (
+          <div className="mx-5 mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-start gap-2 text-xs text-emerald-800 font-bold animate-in fade-in">
+            <span className="text-emerald-600">✓</span>
+            <span>{successMsg}</span>
           </div>
         )}
 
